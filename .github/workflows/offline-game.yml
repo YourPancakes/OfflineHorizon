@@ -138,7 +138,13 @@ jobs:
           done
           cp "target/release/horizon-official${{ matrix.extension }}" \
              "dist/${{ matrix.folder }}/horizon-client${{ matrix.extension }}"
-          cp LICENSE "dist/${{ matrix.folder }}/LICENSE"
+          # The user's own Minecraft assets are prepared locally. Ship
+          # Horizon's open source preparer inputs, never Mojang files.
+          git archive HEAD tools mods/horizon/src/test/java crates/horizon-prepare \
+            research-lock.json LICENSE packaging/PLAY.txt | \
+            tar -xf - -C "dist/${{ matrix.folder }}"
+          test -f "dist/${{ matrix.folder }}/research-lock.json"
+          test -f "dist/${{ matrix.folder }}/PLAY.txt"
           cd dist
           if [[ "${{ matrix.archive }}" == *.tar.gz ]]; then
             tar -czf "${{ matrix.archive }}" "${{ matrix.folder }}"
@@ -167,7 +173,8 @@ jobs:
           cp target/release/horizon-client "$dir/horizon-engine"
           cp target/release/horizon-server "$dir/horizon-server"
           cp target/release/horizon-prepare "$dir/horizon-prepare"
-          cp LICENSE "$dir/"
+          git archive HEAD tools mods/horizon/src/test/java crates/horizon-prepare \
+            research-lock.json LICENSE packaging/PLAY.txt | tar -xf - -C "$dir"
           (cd dist && tar -czf horizon-server-linux-x86_64.tar.gz horizon-server-linux-x86_64)
       - uses: actions/upload-artifact@v4
         if: matrix.name == 'linux-x64'
