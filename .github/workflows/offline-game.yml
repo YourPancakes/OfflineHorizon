@@ -6,6 +6,8 @@ name: OfflineHorizon game release
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -23,11 +25,12 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-      - name: Require a verified upstream source marker
+      - name: Identify fork's upstream base SHA
         run: |
           set -euo pipefail
-          test -f .offline-horizon-upstream-sha
+          test -s .offline-horizon-upstream-sha
           grep -Eq '^[a-f0-9]{40}$' .offline-horizon-upstream-sha
+          echo "Upstream source base: $(cat .offline-horizon-upstream-sha)"
       - name: Check release sources do not contain Minecraft data
         run: python3 tools/check_public_tree.py
       - name: Version for this build
@@ -176,6 +179,7 @@ jobs:
 
   release:
     needs: [source, tests, build]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
