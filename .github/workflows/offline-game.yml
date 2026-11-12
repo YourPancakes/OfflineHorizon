@@ -197,6 +197,26 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Include the latest verified launcher installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '[.[] | select(.tag_name | startswith("launcher@"))] | .[0].tag_name')"
+          test -n "$launcher_tag" && test "$launcher_tag" != "null"
+          mkdir -p dist/launcher-validation
+          gh release download "$launcher_tag" --dir dist/launcher-validation \
+            --pattern 'horizon-launcher-*' --pattern 'SHA256SUMS'
+          (cd dist/launcher-validation && sha256sum --check SHA256SUMS)
+          for asset in horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe \
+                       horizon-launcher-windows-x64.zip horizon-launcher-windows-arm64.zip \
+                       horizon-launcher-macos-arm64.zip horizon-launcher-macos-x64.zip \
+                       horizon-launcher-linux-x86_64.tar.gz; do
+            test -s "dist/launcher-validation/$asset"
+            cp "dist/launcher-validation/$asset" dist/
+          done
       - name: Verify required archives and write SHA-256 sums
         shell: bash
         run: |
@@ -204,10 +224,11 @@ jobs:
           cd dist
           for asset in horizon-linux-x86_64.tar.gz horizon-windows-x64.zip \
                        horizon-macos-arm64.zip horizon-macos-x64.zip \
-                       horizon-server-linux-x86_64.tar.gz; do
+                       horizon-server-linux-x86_64.tar.gz \
+                       horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe; do
             test -s "$asset" || { echo "::error::Missing $asset"; exit 1; }
           done
-          sha256sum horizon-*.tar.gz horizon-*.zip > SHA256SUMS
+          sha256sum horizon-*.tar.gz horizon-*.zip horizon-launcher-setup*.exe > SHA256SUMS
           cat SHA256SUMS
       - name: Publish tested OfflineHorizon game
         env:
@@ -218,8 +239,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG" dist/horizon-*.tar.gz dist/horizon-*.zip \
-            dist/SHA256SUMS \
+            dist/horizon-launcher-setup*.exe dist/SHA256SUMS \
             --target "$GITHUB_SHA" \
             --title "OfflineHorizon $VERSION" \
-            --notes "OfflineHorizon game, tools and dedicated server. Built from tested source at $GITHUB_SHA. Vanilla Minecraft resources are not redistributed." \
+            --notes "" \
             --latest
