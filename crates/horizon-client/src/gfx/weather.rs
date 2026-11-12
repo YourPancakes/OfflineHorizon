@@ -219,8 +219,7 @@ mod tests {
                 cases.push(Case {
                     animation: [3.0, 0.0, delta, 0.0],
                     bases: [bits as u32, (bits >> 32) as u32, 0, 0],
-                    // Isolate U rounding: U clock is 100 * .01, fall clock is zero.
-                    time: [100.0, 0.0, 0.0, 1.0],
+                    time: [100.0, 0.0, 0.0, 0.0],
                     uv: [0.0, 0.0],
                     snow: 1,
                     _pad: 0,

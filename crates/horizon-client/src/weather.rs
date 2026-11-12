@@ -167,8 +167,6 @@ pub struct Vertex {
 
 /// Current ticks are masked on the CPU before conversion to float, including
 /// negative/large tick values. Do not use the renderer's unbounded game_time.
-/// The fourth lane is the rounded snow U time: computing it here preserves
-/// the CPU's multiply order when a GPU driver reassociates floating-point math.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Time {
@@ -176,10 +174,8 @@ pub struct Time {
 }
 impl Time {
     pub fn new(ticks: i64, partial: f32) -> Self {
-        let wrapped = (ticks & 131_071) as f32;
-        let snow_u_time = (wrapped + partial) * 0.01;
         Self {
-            values: [wrapped, (ticks & 511) as f32, partial, snow_u_time],
+            values: [(ticks & 131_071) as f32, (ticks & 511) as f32, partial, 0.0],
         }
     }
 }

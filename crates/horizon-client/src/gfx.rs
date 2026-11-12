@@ -68,7 +68,6 @@ pub fn outline_vertices(edges: &[[f64; 6]], camera: glam::DVec3) -> Vec<[f32; 6]
 
 mod animate;
 mod arena;
-mod binding_cache;
 mod cull;
 mod end_sky;
 mod flat;
@@ -92,13 +91,7 @@ pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
 pub mod panorama;
-mod particle_batch;
-pub use particle_batch::ParticleVertex;
-#[cfg(test)]
-mod particle_tests;
 mod resident;
-#[cfg(test)]
-mod sky_tests;
 mod stars;
 mod timing;
 pub mod translucency;
@@ -282,8 +275,6 @@ pub struct Frame<'a> {
     pub nether_lighting: bool,
     /// Camera-relative entity geometry textured from the shared atlas.
     pub entities: &'a [Vertex],
-    /// Direct particle output while `Renderer::compact_particles_supported` is true.
-    pub translucent_particles: &'a [ParticleVertex],
     /// The glowing entities' silhouettes in their team colours (`OutlineBufferSource`),
     /// outlined through walls after the hand.
     pub glowing: &'a [Vertex],
@@ -458,9 +449,6 @@ pub struct Renderer {
     entity_buffer: wgpu::Buffer,
     entity_capacity: u64,
     entity_batch: EntityBatch,
-    particle_pipeline: wgpu::RenderPipeline,
-    particle_buffer: wgpu::Buffer,
-    particle_capacity: u64,
     group: wgpu::BindGroup,
     globals: wgpu::Buffer,
     lightmap: wgpu::Texture,
@@ -1885,11 +1873,6 @@ impl Renderer {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &entity_attributes,
         })];
-        let particle_vertex = [Some(wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &particle_batch::ATTRIBUTES,
-        })];
         #[allow(clippy::too_many_arguments)]
         let entity_pipeline_with = |label,
                                     cull_mode,
@@ -1899,8 +1882,7 @@ impl Renderer {
                                     blend,
                                     clouds,
                                     fragment: &str,
-                                    write_mask,
-                                    compact| {
+                                    write_mask| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(if clouds {
@@ -1910,19 +1892,9 @@ impl Renderer {
                 }),
                 vertex: wgpu::VertexState {
                     module: &entity_shader,
-                    entry_point: Some(if clouds {
-                        "vs_cloud"
-                    } else if compact {
-                        "vs_particle"
-                    } else {
-                        "vs_entity"
-                    }),
+                    entry_point: Some(if clouds { "vs_cloud" } else { "vs_entity" }),
                     compilation_options: Default::default(),
-                    buffers: if compact {
-                        &particle_vertex
-                    } else {
-                        &entity_vertex
-                    },
+                    buffers: &entity_vertex,
                 },
                 primitive: wgpu::PrimitiveState {
                     cull_mode,
@@ -1961,7 +1933,6 @@ impl Renderer {
                 clouds,
                 "fs_entity",
                 wgpu::ColorWrites::ALL,
-                false,
             )
         };
         // RenderPipelines.WATER_MASK: the boat's water patch writes depth only.
@@ -1975,19 +1946,6 @@ impl Renderer {
             false,
             "fs_water_mask",
             wgpu::ColorWrites::empty(),
-            false,
-        );
-        let particle_pipeline = entity_pipeline_with(
-            "Compact particles",
-            None,
-            true,
-            wgpu::CompareFunction::GreaterEqual,
-            Default::default(),
-            alpha_blend,
-            false,
-            "fs_entity",
-            wgpu::ColorWrites::ALL,
-            true,
         );
         let crumbling_pipeline = entity_pipeline(
             "Breaking cracks",
@@ -2025,7 +1983,6 @@ impl Renderer {
             false,
             "fs_entity_shadow",
             wgpu::ColorWrites::ALL,
-            false,
         );
         // RenderPipelines.ITEM_TRANSLUCENT: blended, depth tested. Drawn before
         // translucent terrain, it cannot write depth: the water behind a
@@ -2088,7 +2045,6 @@ impl Renderer {
             false,
             "fs_energy_swirl",
             wgpu::ColorWrites::ALL,
-            false,
         );
         // Attribute 7: 6 is the entity vertex buffer's glint UV.
         let lightning_attributes = wgpu::vertex_attr_array![7=>Float32x3];
@@ -2463,13 +2419,6 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let particle_capacity = 1;
-        let particle_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Compact particle vertices"),
-            size: particle_capacity * std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let flat_wanted = flat::wanted(&adapter, &device);
         // Readable as storage where flat draws run: a shader pack's terrain program reads them.
         let arena = arena::Arena::new(
@@ -2643,9 +2592,6 @@ impl Renderer {
             entity_buffer,
             entity_capacity,
             entity_batch: EntityBatch::default(),
-            particle_pipeline,
-            particle_buffer,
-            particle_capacity,
             group,
             globals,
             lightmap,
@@ -2937,10 +2883,6 @@ impl Renderer {
     }
     pub fn section_count(&self) -> usize {
         self.sections.len()
-    }
-    /// Particle geometry can use the built-in 32-byte pipeline without a shader pack.
-    pub fn compact_particles_supported(&self) -> bool {
-        self.pack_post.is_none() && self.native.is_none()
     }
     /// What a shader pack's shadow pass draws of the entities this frame: (entities or block
     /// entities other than the player, so those Horizon's culling hides from the camera are
@@ -4345,27 +4287,6 @@ impl Renderer {
                 bytemuck::cast_slice(all_entities),
             );
         }
-        let particles = frame.translucent_particles;
-        debug_assert!(particles.is_empty() || self.compact_particles_supported());
-        let particle_vertices = particles.len() as u64;
-        if particle_vertices > self.particle_capacity {
-            self.particle_capacity = particle_vertices.next_power_of_two();
-            self.particle_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("Compact particle vertices"),
-                size: self.particle_capacity
-                    * std::mem::size_of::<particle_batch::ParticleVertex>() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-        }
-        if !particles.is_empty() {
-            self.uploads.buffer(
-                &mut encoder,
-                &self.particle_buffer,
-                0,
-                bytemuck::cast_slice(particles),
-            );
-        }
         self.entity_outline.prepare(
             &self.device,
             &mut self.uploads,
@@ -4393,9 +4314,7 @@ impl Renderer {
                 bytemuck::cast_slice(&frame.celestial[..celestial_vertices]),
             );
         }
-        let compact_quads = (particle_vertices / 4) as u32;
         let max_quads = (world_quads + additive_quads + hand_quads + see_through_quads)
-            .max(compact_quads)
             .max(cloud_quads)
             .max(if frame.lightning.bolts.is_empty() {
                 0
@@ -4513,9 +4432,6 @@ impl Renderer {
             }
             _ => false,
         };
-        if !flat_frame && let Some(flat) = &mut self.flat {
-            flat.idle();
-        }
         if flat_frame {
             self.section_draw_calls = self.flat.as_ref().map_or(0, |f| f.shadow_calls[0]);
         } else if self.multi_draw && !self.draws.is_empty() {
@@ -4961,9 +4877,9 @@ impl Renderer {
             // the quads write depth, so before it they would hide the glass
             // or water behind them.
             if translucent_particle_quads > 0 {
+                pass.set_pipeline(&self.entity_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
                 pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_pipeline(&self.entity_pipeline);
                 pass.set_vertex_buffer(0, self.entity_buffer.slice(..));
                 pass.draw_indexed(
                     0..translucent_particle_quads * 6,
@@ -4971,14 +4887,6 @@ impl Renderer {
                         as i32,
                     0..1,
                 );
-                pass.set_bind_group(0, &self.group, &[]);
-            }
-            if compact_quads > 0 {
-                pass.set_pipeline(&self.particle_pipeline);
-                pass.set_bind_group(0, &self.entity_group, &[]);
-                pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.set_vertex_buffer(0, self.particle_buffer.slice(..));
-                pass.draw_indexed(0..compact_quads * 6, 0, 0..1);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             // LevelRenderer.executeClassicTransparency: translucent targets'

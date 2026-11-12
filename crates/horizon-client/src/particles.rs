@@ -3685,37 +3685,6 @@ impl ParticleEngine {
         light_at: &dyn Fn([i32; 3]) -> u8,
         out: &mut Vec<Vertex>,
     ) {
-        self.render_to(camera, yaw, pitch, partial, light_at, &mut |v| out.push(v));
-    }
-
-    /// Emit the translucent layer directly, retaining the full format for opaque particles.
-    pub fn render_compact(
-        &self,
-        camera: DVec3,
-        yaw: f32,
-        pitch: f32,
-        partial: f32,
-        light_at: &dyn Fn([i32; 3]) -> u8,
-        out: (&mut Vec<Vertex>, &mut Vec<crate::gfx::ParticleVertex>),
-    ) {
-        self.render_to(camera, yaw, pitch, partial, light_at, &mut |v| {
-            if v.layer == crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY {
-                out.1.push(crate::gfx::ParticleVertex::from(&v));
-            } else {
-                out.0.push(v);
-            }
-        });
-    }
-
-    fn render_to(
-        &self,
-        camera: DVec3,
-        yaw: f32,
-        pitch: f32,
-        partial: f32,
-        light_at: &dyn Fn([i32; 3]) -> u8,
-        out: &mut impl FnMut(Vertex),
-    ) {
         // Camera.setRotation: rotationYXZ(PI - yRot, -xRot, 0).
         let base = Quat::from_rotation_y(std::f32::consts::PI - yaw.to_radians())
             * Quat::from_rotation_x(-pitch.to_radians());
@@ -3842,7 +3811,7 @@ impl ParticleEngine {
                     ((-1.0, -1.0), [u0, v1]),
                 ] {
                     let v = center + rotation * FVec3::new(n.0, n.1, 0.0) * size;
-                    out(Vertex {
+                    out.push(Vertex {
                         normal: [0; 4],
                         pos: v.to_array(),
                         uv,
@@ -3905,78 +3874,6 @@ const CREEPER: [[f64; 2]; 12] = [
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn direct_particle_streams_preserve_vertices_and_layer_order() {
-        let rect = Rect {
-            u0: 0.1,
-            v0: 0.2,
-            u1: 0.9,
-            v1: 0.8,
-            w: 16,
-            h: 16,
-        };
-        let atlas = HashMap::from([("opaque".into(), rect), ("translucent".into(), rect)]);
-        let mut engine = ParticleEngine::new(
-            Path::new(""),
-            &atlas,
-            &HashSet::from(["translucent".into()]),
-        );
-        let mut random = LegacyRandom::new(42);
-        for &ty in ParticleType::ALL {
-            for name in ["opaque", "translucent"] {
-                let mut p = Particle::at(&mut random, ty, [0.5, 1.5, 2.5]);
-                p.sprite = Sprite::Named(name.into());
-                p.age = 3;
-                p.lifetime = 20;
-                engine.particles.push(p);
-            }
-        }
-        let light = |b: [i32; 3]| (b[0] ^ b[1] ^ b[2]) as u8;
-        for yaw in [0.0, 37.0] {
-            for pitch in [-50.0, 0.0, 65.0] {
-                for partial in [0.0, 0.5, 0.9] {
-                    let camera = DVec3::new(0.125, -0.25, 1.0);
-                    let mut original = Vec::new();
-                    engine.render(camera, yaw, pitch, partial, &light, &mut original);
-                    let mut opaque = Vec::new();
-                    let mut compact = Vec::new();
-                    engine.render_compact(
-                        camera,
-                        yaw,
-                        pitch,
-                        partial,
-                        &light,
-                        (&mut opaque, &mut compact),
-                    );
-                    let expected_opaque: Vec<_> = original
-                        .iter()
-                        .filter(|v| v.layer != crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY)
-                        .copied()
-                        .collect();
-                    let expected_compact: Vec<_> = original
-                        .iter()
-                        .filter(|v| v.layer == crate::gfx::TRANSLUCENT_PARTICLE_OVERLAY)
-                        .map(|v| {
-                            assert_eq!(v.normal, [0; 4]);
-                            assert_eq!(v.glint_uv, [0.0; 2]);
-                            crate::gfx::ParticleVertex::from(v)
-                        })
-                        .collect();
-                    assert!(!opaque.is_empty() && !compact.is_empty());
-                    assert_eq!(compact.len() % 4, 0);
-                    assert_eq!(
-                        bytemuck::cast_slice::<_, u8>(&opaque),
-                        bytemuck::cast_slice::<_, u8>(&expected_opaque),
-                    );
-                    assert_eq!(
-                        bytemuck::cast_slice::<_, u8>(&compact),
-                        bytemuck::cast_slice::<_, u8>(&expected_compact),
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn egg_teleport_unpacks_offsets_and_preserves_seeded_draw_order() {

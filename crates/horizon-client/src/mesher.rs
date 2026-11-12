@@ -22,7 +22,6 @@ use horizon_world::{
     registry::BlockStateId,
 };
 pub use sides::Sides;
-pub(crate) use sides::Sorter as SideSorter;
 use std::sync::Arc;
 
 /// An entity, item and effect vertex (the entity pipelines), with a face
@@ -253,8 +252,6 @@ fn visibility(pad: &Padded, info: &[Info]) -> u64 {
     }
     result
 }
-#[cfg(test)]
-mod optimization_ab_tests;
 #[cfg(test)]
 mod particle_tests;
 #[cfg(test)]

@@ -153,13 +153,8 @@ impl Sprites {
         let mut resized = Vec::with_capacity(self.native.len());
         self.pixels.clear();
         for (from, frames, initial) in &self.native {
-            // Already at the array resolution: the native frames are immutable
-            // and can be shared with animations rather than copied once more.
-            let frames: Arc<Vec<Vec<u8>>> = if *from == size {
-                Arc::clone(frames)
-            } else {
-                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect())
-            };
+            let frames: Arc<Vec<Vec<u8>>> =
+                Arc::new(frames.iter().map(|f| resample(f, *from, size)).collect());
             self.pixels.extend_from_slice(&frames[*initial]);
             resized.push(frames);
         }
