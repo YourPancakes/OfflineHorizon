@@ -3,7 +3,8 @@
 //! launcher's). The launcher and the game both read and write it here, so they always agree.
 //!
 //! It is the `noAi` line of the game's `horizon-extras.txt`, in the game's home (the folder
-//! with `options.txt`). Missing means off: AI features are available. See docs/agent-control.md.
+//! with `options.txt`). In OfflineHorizon, missing means on until explicitly disabled.
+//! See docs/agent-control.md.
 use std::{fs, io, path::Path};
 
 /// The game's extras file, beside `options.txt`.
@@ -43,18 +44,13 @@ pub fn with(text: &str, on: bool) -> String {
     out
 }
 
-/// Turns No AI on or off for the game in `home`, keeping the file's other settings. Turning it
-/// off where there is no file writes nothing (off is the default).
+/// Turns No AI on or off for the game in `home`, keeping the file's other settings.
+/// OfflineHorizon enables No AI by default, so turning it off must save an explicit override.
 pub fn set(home: &Path, on: bool) -> io::Result<()> {
     let path = home.join(FILE);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if !on {
-                return Ok(());
-            }
-            String::new()
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
     fs::create_dir_all(home)?;
@@ -87,7 +83,8 @@ mod tests {
         let home = std::env::temp_dir().join(format!("horizon-no-ai-{}", std::process::id()));
         let _ = fs::remove_dir_all(&home);
         set(&home, false).unwrap();
-        assert!(!home.join(FILE).exists(), "off needs no file");
+        assert_eq!(fs::read_to_string(home.join(FILE)).unwrap(), "noAi:false\n");
+        assert!(!is_on(&home));
         assert!(check(&home).is_ok());
         set(&home, true).unwrap();
         assert!(is_on(&home));
