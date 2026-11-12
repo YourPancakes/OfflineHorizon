@@ -1,7 +1,10 @@
 # OfflineHorizon release methods
 
 **Primary:** `.github/workflows/offline-game.yml` runs on GitHub Actions,
-tests and compiles Windows, macOS and Linux, then publishes a GitHub Release.
+tests and compiles Windows, macOS and Linux, downloads the most recent
+`launcher@*` release's installer executables and platform launchers, validates
+their source checksums, and publishes all tested game and verified launcher
+files together. GitHub Release notes are intentionally empty.
 
 **Fallback:** `release_fallback.py server` is a low-memory, streaming
 publisher designed for a separate server. It checks the exact GitHub
@@ -41,3 +44,10 @@ their verified prebuilt artifacts are still required.
 
 Do not change repository visibility or host these private assets
 publicly without the repository owner's permission.
+
+For an already-published game release that lacks launchers,
+`attach_launchers.py` copies the verified, previously compiled
+`launcher@0.2.0` installers and archives into `v0.2.9`. It verifies
+SHA256 digests against the source release and refuses mismatches, instead
+of rebuilding on the 1-vCPU VPS. These launchers remain version 0.2.0;
+adding them to the game release does not recompile or rename them.
