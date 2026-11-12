@@ -5,6 +5,7 @@
 # Update this manifest before the very first production synchronization.
 .github/workflows/launcher.yml
 .github/workflows/offline-game.yml
+.github/workflows/offline-upstream-sync.yml
 .github/workflows/mojang-republish.yml
 .github/workflows/nightly-build.yml
 .github/workflows/nightly.yml
@@ -79,6 +80,12 @@ launcher/tests/owner_gate.rs
 tests/test_pr_ready.py
 tests/test_remote_motion.py
 tools/addresses.json
+tools/offlinehorizon_sync/sync.py
+tools/offlinehorizon_sync/release_guard.py
+tools/offlinehorizon_sync/manifest.txt
+tools/offlinehorizon_sync/README.md
+tools/offlinehorizon_sync/tests/test_sync.py
+tools/offlinehorizon_sync/tests/test_release_guard.py
 tools/parity.py
 tools/port_publish.py
 xtask/Cargo.toml

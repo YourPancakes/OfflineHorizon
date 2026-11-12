@@ -48,6 +48,8 @@ env:
 
 jobs:
   decide:
+    # Avoid charging or scheduling GitHub-hosted builds while fallback is active.
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

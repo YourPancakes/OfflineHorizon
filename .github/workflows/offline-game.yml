@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   source:
+    # Default to the low-resource external publisher until hosted builders return.
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}

@@ -17,14 +17,15 @@ concurrency:
 
 jobs:
   synchronize:
-    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main'
+    # VPS Docker is the default while hosted Actions billing is exhausted.
+    # Set both repository variables to 1 to opt back into hosted sync/builds.
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main' && vars.OFFLINEHORIZON_GITHUB_SYNC == '1'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
       SYNC_PUBLISH: '1'
       SOURCE_PATH: ${{ github.workspace }}
-      WORK_ROOT: ${{ runner.temp }}/offlinehorizon-sync
       UPSTREAM_URL: https://github.com/horizon-rust/horizon.git
       FORK_URL: https://github.com/YourPancakes/OfflineHorizon.git
       BASE_SHA: b880384691b88d317553067109d28e785990bda3
@@ -44,6 +45,9 @@ jobs:
             echo 'ready=false' >> "$GITHUB_OUTPUT"
             echo 'Waiting for the approved fork source baseline' >> "$GITHUB_STEP_SUMMARY"
           fi
+      - name: Use isolated temporary work directory
+        shell: bash
+        run: echo "WORK_ROOT=$RUNNER_TEMP/offlinehorizon-sync" >> "$GITHUB_ENV"
       - name: Validate synchronization scripts
         if: steps.base.outputs.ready == 'true'
         run: python3 -m py_compile tools/offlinehorizon_sync/sync.py tools/offlinehorizon_sync/release_guard.py
@@ -59,7 +63,7 @@ jobs:
           echo "$result"
           printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
       - name: Dispatch missing game and launcher releases
-        if: steps.base.outputs.ready == 'true'
+        if: steps.base.outputs.ready == 'true' && vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
         shell: bash
         run: |
           set -euo pipefail
