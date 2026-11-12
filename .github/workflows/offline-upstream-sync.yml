@@ -45,6 +45,9 @@ jobs:
       - name: Validate synchronization script
         if: steps.base.outputs.ready == 'true'
         run: python3 -m py_compile tools/offlinehorizon_sync/sync.py
+      - name: Run sync regression and fail-closed tests
+        if: steps.base.outputs.ready == 'true'
+        run: python3 -m unittest discover -s tools/offlinehorizon_sync/tests -p 'test_sync.py' -q
       - name: Copy only the latest fully green upstream revision
         if: steps.base.outputs.ready == 'true'
         shell: bash
