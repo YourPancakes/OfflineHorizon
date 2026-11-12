@@ -1,0 +1,61 @@
+name: OfflineHorizon upstream sync
+
+# GitHub handles upstream history, authorization, commits, and release dispatch.
+# The VPS Docker installation can remain read-only; no personal PAT is required.
+on:
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: offlinehorizon-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SYNC_PUBLISH: '1'
+      SOURCE_PATH: ${{ github.workspace }}
+      WORK_ROOT: ${{ runner.temp }}/offlinehorizon-sync
+      UPSTREAM_URL: https://github.com/horizon-rust/horizon.git
+      FORK_URL: https://github.com/YourPancakes/OfflineHorizon.git
+      BASE_SHA: b880384691b88d317553067109d28e785990bda3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require recorded original source base
+        id: base
+        run: |
+          if [[ -f .offline-horizon-upstream-sha ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Waiting for the approved fork source baseline' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Validate synchronization script
+        if: steps.base.outputs.ready == 'true'
+        run: python3 -m py_compile tools/offlinehorizon_sync/sync.py
+      - name: Copy only the latest fully green upstream revision
+        if: steps.base.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=$(python3 tools/offlinehorizon_sync/sync.py --once)
+          echo "$result"
+          echo "### Upstream source synchronization" >> "$GITHUB_STEP_SUMMARY"
+          echo "`$result`" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("pushed",False))' <<< "$result")" == True ]]; then
+            # GITHUB_TOKEN pushes do not trigger push workflows. workflow_dispatch
+            # is an explicit exception, so start the game tests/release ourselves.
+            gh workflow run offline-game.yml --repo "$GITHUB_REPOSITORY" --ref main
+          fi
