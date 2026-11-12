@@ -33,8 +33,7 @@ run-name: nightly build${{ inputs.request && format(' (request {0})', inputs.req
 #   gh workflow run "nightly build" -f force=true       # build and publish even if unchanged
 #   gh workflow run "nightly build" -f dry_run=true     # build and sign with a throwaway key, publish nothing
 on:
-  schedule:
-    - cron: '17 20 * * *'  # 20:17 UTC: after the day's waves, before the 03:07 Paris parity audit takes the Mac mini
+  # No automatic game Nightly builds in OfflineHorizon.
   workflow_dispatch:
     inputs:
       force:

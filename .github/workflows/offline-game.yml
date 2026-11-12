@@ -19,10 +19,13 @@ concurrency:
 
 jobs:
   source:
+    # Default to the low-resource external publisher until hosted builders return.
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
       - name: Identify fork's upstream base SHA
@@ -35,12 +38,27 @@ jobs:
         run: python3 tools/check_public_tree.py
       - name: Version for this build
         id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "version=0.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "tag=v0.2.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          existing=$(jq -r --arg head "$GITHUB_SHA" '.[] | select(.target_commitish == $head) | .tag_name | select(test("^v0\\.2\\.[0-9]+$"))' <<< "$releases")
+          if [[ -n "$existing" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Existing game release for this source: $existing"
+            exit 0
+          fi
+          # Increment independently of GitHub workflow run numbers and launcher tags.
+          last=$(jq -r '.[].tag_name | select(test("^v0\\.2\\.[0-9]+$")) | sub("^v0\\.2\\."; "") | tonumber' <<< "$releases" | sort -n | tail -1)
+          version="0.2.$((${last:-0} + 1))"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
   tests:
     needs: source
+    if: needs.source.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -60,6 +78,7 @@ jobs:
 
   build:
     needs: [source, tests]
+    if: needs.source.outputs.publish == 'true'
     continue-on-error: ${{ matrix.name == 'windows-arm64' }}
     strategy:
       fail-fast: false
@@ -188,7 +207,7 @@ jobs:
 
   release:
     needs: [source, tests, build]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.source.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -197,26 +216,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Include the latest verified launcher installers
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          launcher_tag="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '[.[] | select(.tag_name | startswith("launcher@"))] | .[0].tag_name')"
-          test -n "$launcher_tag" && test "$launcher_tag" != "null"
-          mkdir -p dist/launcher-validation
-          gh release download "$launcher_tag" --dir dist/launcher-validation \
-            --pattern 'horizon-launcher-*' --pattern 'SHA256SUMS'
-          (cd dist/launcher-validation && sha256sum --check SHA256SUMS)
-          for asset in horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe \
-                       horizon-launcher-windows-x64.zip horizon-launcher-windows-arm64.zip \
-                       horizon-launcher-macos-arm64.zip horizon-launcher-macos-x64.zip \
-                       horizon-launcher-linux-x86_64.tar.gz; do
-            test -s "dist/launcher-validation/$asset"
-            cp "dist/launcher-validation/$asset" dist/
-          done
       - name: Verify required archives and write SHA-256 sums
         shell: bash
         run: |
@@ -224,11 +223,10 @@ jobs:
           cd dist
           for asset in horizon-linux-x86_64.tar.gz horizon-windows-x64.zip \
                        horizon-macos-arm64.zip horizon-macos-x64.zip \
-                       horizon-server-linux-x86_64.tar.gz \
-                       horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe; do
+                       horizon-server-linux-x86_64.tar.gz; do
             test -s "$asset" || { echo "::error::Missing $asset"; exit 1; }
           done
-          sha256sum horizon-*.tar.gz horizon-*.zip horizon-launcher-setup*.exe > SHA256SUMS
+          sha256sum horizon-*.tar.gz horizon-*.zip > SHA256SUMS
           cat SHA256SUMS
       - name: Publish tested OfflineHorizon game
         env:
@@ -239,8 +237,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "$TAG" dist/horizon-*.tar.gz dist/horizon-*.zip \
-            dist/horizon-launcher-setup*.exe dist/SHA256SUMS \
+            dist/SHA256SUMS \
             --target "$GITHUB_SHA" \
             --title "OfflineHorizon $VERSION" \
-            --notes "" \
+            --notes "OfflineHorizon game, tools and dedicated server. Built from tested source at $GITHUB_SHA. Vanilla Minecraft resources are not redistributed." \
             --latest

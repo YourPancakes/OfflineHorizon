@@ -1,0 +1,87 @@
+name: OfflineHorizon upstream sync
+
+# GitHub handles upstream history, authorization, commits, and release dispatch.
+# The VPS Docker installation can remain read-only; no personal PAT is required.
+on:
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: offlinehorizon-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    # VPS Docker is the default while hosted Actions billing is exhausted.
+    # Set both repository variables to 1 to opt back into hosted sync/builds.
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main' && vars.OFFLINEHORIZON_GITHUB_SYNC == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SYNC_PUBLISH: '1'
+      SOURCE_PATH: ${{ github.workspace }}
+      UPSTREAM_URL: https://github.com/horizon-rust/horizon.git
+      FORK_URL: https://github.com/YourPancakes/OfflineHorizon.git
+      BASE_SHA: b880384691b88d317553067109d28e785990bda3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require recorded original source base
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -s .offline-horizon-upstream-sha ]] && grep -Eq '^[a-f0-9]{40}$' .offline-horizon-upstream-sha; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Waiting for the approved fork source baseline' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Use isolated temporary work directory
+        shell: bash
+        run: echo "WORK_ROOT=$RUNNER_TEMP/offlinehorizon-sync" >> "$GITHUB_ENV"
+      - name: Validate synchronization scripts
+        if: steps.base.outputs.ready == 'true'
+        run: python3 -m py_compile tools/offlinehorizon_sync/sync.py tools/offlinehorizon_sync/release_guard.py
+      - name: Run sync and release orchestration regression tests
+        if: steps.base.outputs.ready == 'true'
+        run: python3 -m unittest discover -s tools/offlinehorizon_sync/tests -p 'test_*.py' -q
+      - name: Copy only the latest fully green upstream revision
+        if: steps.base.outputs.ready == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          result=$(python3 tools/offlinehorizon_sync/sync.py --once)
+          echo "$result"
+          printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+      - name: Dispatch missing game and launcher releases
+        if: steps.base.outputs.ready == 'true' && vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # GITHUB_TOKEN pushes do not trigger push workflows. Dispatch both
+          # release workflows, even when the upstream SHA has not changed,
+          # if a previous dispatch failed or was never started.
+          result=$(python3 tools/offlinehorizon_sync/release_guard.py)
+          printf '### Release readiness\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          for workflow in offline-game.yml launcher.yml; do
+            decision=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["decisions"][sys.argv[2]])' "$result" "$workflow")
+            echo "$workflow: $decision"
+            if [[ "$decision" == dispatch ]]; then
+              if [[ "$workflow" == launcher.yml ]]; then
+                gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false -f force=false
+              else
+                gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main
+              fi
+            elif [[ "$decision" == incomplete_release || "$decision" == successful_run_without_release || "$decision" == retry_limit ]]; then
+              printf '\n- %s: %s (manual investigation required)\n' "$workflow" "$decision" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done

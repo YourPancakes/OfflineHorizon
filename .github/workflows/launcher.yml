@@ -24,18 +24,16 @@ name: launcher
 on:
   push:
     branches: [main, launcher, 'launcher-*']
-  schedule:
-    - cron: '7-59/10 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
         description: Build everything and write the notes, but publish nothing
         type: boolean
-        default: false
-      force:
-        description: Release even without launcher changes, before merges settle or while paused
-        type: boolean
         default: true
+      force:
+        description: Build even if this commit already has a launcher release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +48,8 @@ env:
 
 jobs:
   decide:
+    # Avoid charging or scheduling GitHub-hosted builds while fallback is active.
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -68,21 +68,35 @@ jobs:
       - id: decide
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASES_PAUSED: ${{ vars.RELEASES_PAUSED }}
-          # A push or a run off main builds its own commit; otherwise main's newest commit with green checks.
-          HEAD_SHA: ${{ (github.event_name == 'push' || steps.mode.outputs.dry_run == 'true') && github.sha || '' }}
           FORCE: ${{ inputs.force && 'yes' || '' }}
+          RELEASES_PAUSED: ${{ vars.RELEASES_PAUSED }}
         run: |
-          decision=$(python3 tools/release_train.py decide --kind launcher --force || true)
-          echo "$decision" > decision.json || true
-          tag=$(jq -r '.tag // empty' decision.json 2>/dev/null || true)
-          if [ -z "$tag" ]; then
-            tag="launcher@0.2.0"
+          set -euo pipefail
+          if [[ "$RELEASES_PAUSED" == 1 && "$FORCE" != yes ]]; then
+            echo 'release=false' >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          echo "release=true" >> "$GITHUB_OUTPUT"
+          # Never publish twice for the same tree; the controller pushes only on upstream changes.
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          # Game and launcher releases can share a commit; only a prior
+          # launcher release can suppress the next launcher build.
+          already=$(jq -r --arg sha "$GITHUB_SHA" '.[] | select(.target_commitish == $sha) | .tag_name | select(startswith("launcher@") or startswith("launcher-v"))' <<< "$releases")
+          if [[ -n "$already" && "$FORCE" != yes ]]; then
+            echo 'release=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Increment the launcher's own tag; game tags never affect this sequence.
+          last=$(git tag -l 'launcher@*' | grep -E '^launcher@[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          if [[ -z "$last" ]]; then
+            tag='launcher@0.2.1'
+          else
+            version=${last#launcher@}
+            IFS=. read -r major minor patch <<< "$version"
+            tag="launcher@$major.$minor.$((patch + 1))"
+          fi
+          echo 'release=true' >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          version=${tag#launcher-v}
-          echo "version=${version#launcher@}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#launcher@}" >> "$GITHUB_OUTPUT"
           echo "head=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   build:
@@ -181,8 +195,17 @@ jobs:
             echo "::notice::No Metal toolchain on this runner: GPUI compiles its shaders at run time"
             echo "LAUNCHER_FEATURES=gpui_platform/runtime_shaders" >> "$GITHUB_ENV"
           fi
-      # Every test target (the library, the binary, tests/), on each system the launcher ships for.
-      - run: cargo test --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"} || true
+      # These fork-specific contracts MUST pass; unrelated upstream tests can be flaky.
+      - name: Required OfflineHorizon compatibility tests
+        run: |
+          set -euo pipefail
+          target='${{ matrix.target && format('--target {0}', matrix.target) || '' }}'
+          for test in selected_offline_profile_is_sent_to_game game_release_never_selects_a_launcher_binary_as_its_asset launcher_releases_never_fall_back_to_game_repository launcher_checksums_are_loaded_from_launcher_repo tags_never_mix signed_checksums_are_used_but_unsigned_releases_can_fall_back known_checksums_reject_tampering_and_unsigned_stages_remain_supported offline_profile_controls_have_localizations_in_primary_languages; do
+            cargo test --release --locked --lib $target ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"} "$test"
+          done
+      - name: Upstream-wide tests (informational; do not block fork release)
+        continue-on-error: true
+        run: cargo test --release --locked --lib ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }} ${LAUNCHER_FEATURES:+--features "$LAUNCHER_FEATURES"}
       - name: Verify Windows executable architecture
         if: runner.os == 'Windows'
@@ -405,6 +428,12 @@ jobs:
           key=(); [[ -f dist/ephemeral.pub ]] && key=(--key "$(cat dist/ephemeral.pub)")
           cargo run --locked --quiet -p horizon-release-sign -- verify --tag "$TAG" --publishing "${key[@]}" dist || echo "::warning::Signature verification skipped for custom build"
       # Never marked latest: Horizon's own releases stay the repository's latest.
+      - name: All mandatory platform archives are present
+        run: |
+          set -euo pipefail
+          for file in horizon-launcher-linux-x86_64.tar.gz horizon-launcher-macos-arm64.zip horizon-launcher-macos-x64.zip horizon-launcher-windows-x64.zip; do
+            test -s "dist/$file" || { echo "::error::Missing required archive $file"; exit 1; }
+          done
       - name: The Windows ARM64 launcher, if it built
         # Its build may fail without holding the release (continue-on-error): the release then has no ARM64
         # files, and ARM64 launchers stay on their version until one has (backend::launcher_update_from).
@@ -419,12 +448,14 @@ jobs:
           TAG: ${{ needs.decide.outputs.tag }}
         run: |
           signature=(); [[ -f dist/SHA256SUMS.sig ]] && signature=(dist/SHA256SUMS.sig)
+          set -euo pipefail
+          # Never silently overwrite existing release archives, even during a retry.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" --clobber dist/horizon-launcher-* dist/SHA256SUMS "${signature[@]}"
-          else
-            gh release create "$TAG" --target "${{ needs.decide.outputs.head }}" --title "$(cat notes/title.txt 2>/dev/null || echo "$TAG")" \
-              --notes-file notes/body.md --latest=false dist/horizon-launcher-* dist/SHA256SUMS "${signature[@]}"
+            echo "::error::Release $TAG already exists; refusing to clobber its assets"
+            exit 1
           fi
+          gh release create "$TAG" --target "${{ needs.decide.outputs.head }}" --title "$(cat notes/title.txt 2>/dev/null || echo "$TAG")" \
+            --notes-file notes/body.md --latest=false dist/horizon-launcher-* dist/SHA256SUMS "${signature[@]}"
       - name: Dry run, the release that would be published
         if: needs.decide.outputs.dry_run == 'true'
         run: |
