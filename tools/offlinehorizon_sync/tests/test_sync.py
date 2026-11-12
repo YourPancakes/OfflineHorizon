@@ -288,7 +288,7 @@ class GitSynchronizationTests(unittest.TestCase):
             path.write_text("{}\n", encoding="utf-8")
         backend = self.upstream / "launcher" / "src" / "backend.rs"
         backend.parent.mkdir(parents=True, exist_ok=True)
-        backend.write_text('pub const REPO: &str = "YourPancakes/OfflineHorizon";\n'
+        backend.write_text('pub const REPO: &str = "horizon-rust/horizon";\n'
                            'pub const LAUNCHER_REPO: &str = "YourPancakes/OfflineHorizon";\n',
                            encoding="utf-8")
         workflow = self.upstream / ".github" / "workflows" / "launcher.yml"

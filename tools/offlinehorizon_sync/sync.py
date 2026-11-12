@@ -467,9 +467,9 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                 json.loads((repo / "launcher" / "lang" / f"{lang}.json")
                            .read_text(encoding="utf-8"))
             backend = (repo / "launcher" / "src" / "backend.rs").read_text(encoding="utf-8")
-            if ('pub const REPO: &str = "YourPancakes/OfflineHorizon"' not in backend
+            if ('pub const REPO: &str = "horizon-rust/horizon"' not in backend
                     or 'pub const LAUNCHER_REPO: &str = "YourPancakes/OfflineHorizon"' not in backend):
-                raise SyncError("Fork game/launcher release sources must use OfflineHorizon")
+                raise SyncError("Game releases must be public upstream; launcher releases use the fork")
             if not (repo / ".github" / "workflows" / "launcher.yml").is_file():
                 raise SyncError("Cross-platform launcher workflow is missing")
             if not (repo / ".github" / "workflows" / "offline-game.yml").is_file():

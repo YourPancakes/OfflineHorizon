@@ -9,7 +9,11 @@ use horizon_release_sign::{PublicKey, SIGNATURE, SIGNATURE_V2, SUMS};
 
 /// Where a release's attached file downloads from (GitHub's fixed address for it).
 pub fn asset_url(tag: &str, name: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/{tag}/{name}")
+    asset_url_in_repo(REPO, tag, name)
+}
+
+fn asset_url_in_repo(repo: &str, tag: &str, name: &str) -> String {
+    format!("https://github.com/{repo}/releases/download/{tag}/{name}")
 }
 
 /// The signed SHA-256 of `asset` in release `tag`, fetching its SHA256SUMS and SHA256SUMS.sig
@@ -21,11 +25,24 @@ pub fn digest(
     keys: &[PublicKey],
     fetch: impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<String, String> {
-    if let Some(hex) = horizon_release_sign::legacy_digest(tag, asset) {
-        return Ok(hex.to_owned());
+    digest_in_repo(REPO, tag, asset, keys, fetch)
+}
+
+/// Resolve launcher checksums from its own release repository.
+pub fn digest_in_repo(
+    repo: &str,
+    tag: &str,
+    asset: &str,
+    keys: &[PublicKey],
+    fetch: impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
+) -> Result<String, String> {
+    if repo == REPO {
+        if let Some(hex) = horizon_release_sign::legacy_digest(tag, asset) {
+            return Ok(hex.to_owned());
+        }
     }
-    let sums = fetch(&asset_url(tag, SUMS))?;
-    let signature = fetch(&asset_url(tag, SIGNATURE))?
+    let sums = fetch(&asset_url_in_repo(repo, tag, SUMS))?;
+    let signature = fetch(&asset_url_in_repo(repo, tag, SIGNATURE))?
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
     match horizon_release_sign::signed_digest(
         tag,

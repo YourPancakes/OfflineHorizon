@@ -10,7 +10,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
-pub const REPO: &str = "YourPancakes/OfflineHorizon";
+/// The game release list must be publicly accessible without a token.
+pub const REPO: &str = "horizon-rust/horizon";
+/// Only custom launcher builds come from the private OfflineHorizon fork.
+pub const LAUNCHER_REPO: &str = "YourPancakes/OfflineHorizon";
 pub const README_URL: &str = "https://github.com/YourPancakes/OfflineHorizon/blob/main/README.md";
 /// The players' page on connecting an AI agent (the website's docs/agents.md).
 pub const AGENT_DOCS_URL: &str = "https://playhorizon.dev/docs/agents";
@@ -726,7 +729,9 @@ pub(crate) fn parse_releases(
 }
 
 fn is_launcher_tag(tag: &str) -> bool {
-    launcher_version(tag).is_some()
+    // A game release may carry launcher archives, but is never a launcher update.
+    (tag.starts_with(LAUNCHER_TAG_PREFIX) || tag.starts_with(OLD_LAUNCHER_TAG_PREFIX))
+        && launcher_version(tag).is_some()
 }
 
 /// Published Horizon builds, newest first: the current Nightly (the only build Horizon ships since
@@ -791,17 +796,21 @@ fn launcher_releases_in(list: &serde_json::Value) -> Vec<Release> {
 }
 
 fn launcher_releases_in_with(
-    list: &serde_json::Value,
+    _list: &serde_json::Value,
     json: impl Fn(String) -> Result<serde_json::Value, String>,
 ) -> Vec<Release> {
-    let found = parse_releases(list, launcher_asset(), is_launcher_tag);
-    if found.iter().any(|r| r.asset.is_some()) {
-        return found;
+    // Never take a launcher from the public game's release list.
+    let launcher_api =
+        format!("https://api.github.com/repos/{LAUNCHER_REPO}/releases?per_page=100");
+    if let Ok(releases_list) = json(launcher_api) {
+        let found = parse_releases(&releases_list, launcher_asset(), is_launcher_tag);
+        if found.iter().any(|r| r.asset.is_some()) {
+            return found;
+        }
     }
-    let api = format!("https://api.github.com/repos/{REPO}");
+    let api = format!("https://api.github.com/repos/{LAUNCHER_REPO}");
     let mut tags = Vec::new();
     for prefix in [LAUNCHER_TAG_PREFIX, OLD_LAUNCHER_TAG_PREFIX] {
-        // Every `launcher@` tag is newer than every `launcher-v` one: those only when there is none.
         if tags.is_empty() {
             if let Ok(refs) = json(format!("{api}/git/matching-refs/tags/{prefix}")) {
                 tags = newest_launcher_tags(&refs);
@@ -820,7 +829,7 @@ fn launcher_releases_in_with(
             }
         }
     }
-    found
+    Vec::new()
 }
 
 /// The launcher tags in GitHub's matching-refs answer, newest first.
@@ -1112,6 +1121,17 @@ pub(crate) fn fetch_small(url: &str) -> Result<Option<Vec<u8>>, String> {
 /// The SHA-256 the release's signed checksums give for `asset`, or why it must not be installed.
 fn signed_digest(tag: &str, asset: &str) -> Result<String, String> {
     crate::signed::digest(
+        tag,
+        asset,
+        &horizon_release_sign::trusted_keys(),
+        fetch_small,
+    )
+}
+
+/// Resolve launcher release checksums from the launcher's own repository.
+fn launcher_digest(tag: &str, asset: &str) -> Result<String, String> {
+    crate::signed::digest_in_repo(
+        LAUNCHER_REPO,
         tag,
         asset,
         &horizon_release_sign::trusted_keys(),
@@ -3947,7 +3967,9 @@ pub fn stage_update(release: &Release, progress: impl Fn(f32)) -> Result<Option<
     {
         return Ok(None);
     }
-    let sha256 = signed_digest(&release.tag, launcher_asset().unwrap_or_default())?;
+    let asset_name = url.split('?').next().unwrap_or(&url)
+        .rsplit('/').next().unwrap_or_default();
+    let sha256 = launcher_digest(&release.tag, asset_name)?;
     let work = update_work_dir();
     remove_abandoned_stages(&work, std::time::SystemTime::now(), process_alive);
     let stage = new_stage_folder(&work)?;
@@ -5461,6 +5483,7 @@ pub fn {f}("
         assert!(!is_game_tag("launcher@0.2.0"));
         assert!(is_game_tag("v0.2.0"));
         assert!(is_launcher_tag("launcher@0.2.0"));
+        assert!(!is_launcher_tag("v0.2.9"), "game release is not a launcher update");
         assert_eq!(launcher_version("v2026.10.13"), None);
         assert_eq!(launcher_version("launcher-vx"), None);
         let list = serde_json::json!([
@@ -6112,13 +6135,27 @@ pub fn {f}("
             .collect::<Vec<_>>()
         };
         assert_eq!(lookup(true), ["launcher@0.2.0"]);
-        assert_eq!(*asked.borrow(), ["launcher@", "launcher@0.2.0"]);
+        assert_eq!(*asked.borrow(), ["releases?per_page=100", "launcher@", "launcher@0.2.0"]);
         // Before the first `launcher@` release, the `launcher-v` ones.
         assert_eq!(lookup(false), ["launcher-v0.17.0"]);
         assert_eq!(
             *asked.borrow(),
-            ["launcher@", "launcher-v", "launcher-v0.17.0"]
+            ["releases?per_page=100", "launcher@", "launcher-v", "launcher-v0.17.0"]
         );
+    }
+
+    #[test]
+    fn mixed_game_and_launcher_assets_do_not_trigger_launcher_update_from_game_tag() {
+        let asset = launcher_asset().unwrap_or("horizon-launcher-windows-x64.zip");
+        let list = serde_json::json!([
+            {"tag_name": "v0.2.9", "assets": [{"name": asset, "size": 10,
+                "browser_download_url": "wrong-game-release"}]},
+            {"tag_name": "launcher@0.2.0", "assets": [{"name": asset, "size": 10,
+                "browser_download_url": "correct-launcher-release"}]}
+        ]);
+        let found = parse_releases(&list, Some(asset), is_launcher_tag);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].tag, "launcher@0.2.0");
     }
 
     #[test]
