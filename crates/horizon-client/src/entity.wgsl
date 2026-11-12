@@ -129,11 +129,6 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     out.glint_uv = glint_uv;
     return out;
 }
-// Particles carry the same variable attributes in 32 bytes; their normal and glint UV are zero.
-@vertex fn vs_particle(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
-    @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>) -> Out {
-    return entity_vertex(position, uv, overlay, color, light, vec4<f32>(0.0));
-}
 // Retained bolt-local geometry, translated using the same f64 camera
 // subtraction as the former CPU path before adding each local f32 position.
 // The bolt offset is instance attribute 7: 6 is the entity vertex's glint UV.
@@ -408,8 +403,7 @@ fn weather_phase(animation: vec4<f32>, bases: vec4<u32>, snow: u32, time: vec4<f
         return vec2(0.0, offset % 32.0);
     }
     let t = time.x + time.z;
-    // Rounded once on the CPU so a driver cannot reassociate t * .01 * drift.
-    let u_time = time.w;
+    let u_time = t * 0.01;
     let du = u_time * animation.z;
     let v_time = t * animation.w;
     let dv = v_time * 0.001;

@@ -484,7 +484,6 @@ impl Streaming {
                         // the worker across mesh jobs, like vanilla's per-thread cache:
                         // cloning it per job copied every state and face shape.
                         let mut faces: Option<(Arc<MeshTables>, FaceVisibility)> = None;
-                        let mut side_sorter = crate::mesher::SideSorter::default();
                         let mut mesh_scratch = crate::mesher::MeshScratch::default();
                         let mut light_scratch = LightScratch::default();
                         loop {
@@ -560,7 +559,7 @@ impl Streaming {
                                         sy,
                                         &mut mesh_scratch,
                                     );
-                                    mesh.sides = side_sorter.sort(&mut mesh.solid);
+                                    mesh.sort_solid();
                                     faces = Some((context.tables.clone(), mesher.visibility));
                                     Done::Meshed(x, sy, z, mesh, seq)
                                 }
