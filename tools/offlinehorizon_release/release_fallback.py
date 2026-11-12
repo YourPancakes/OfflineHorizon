@@ -225,15 +225,8 @@ def create_draft(token: str, repo: str, tag: str, sha: str, run_id: int):
     release = get_release(token, repo, tag)
     if release:
         return release
-    body = (
-        "OfflineHorizon game release, built and tested by GitHub Actions.\n\n"
-        f"Source commit: {sha}\n"
-        f"Verified build: https://github.com/{repo}/actions/runs/{run_id}\n"
-        "The binaries were copied from verified GitHub Actions artifacts and "
-        "published through a low-resource server fallback because the GitHub "
-        "release job could not start.\n"
-        "Original Minecraft game assets are not redistributed."
-    )
+    # Release notes are intentionally blank: no internal CI, server or provenance text.
+    body = ""
     return api(token, "POST", f"/repos/{repo}/releases", {
         "tag_name": tag,
         "target_commitish": sha,
