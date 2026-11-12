@@ -56,7 +56,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
       - name: Rust core, friends, and client library tests
-        run: cargo test --locked -p horizon-core --lib -p horizon-friends --lib -p horizon-client --lib
+        run: cargo test --locked --lib -p horizon-core -p horizon-friends -p horizon-client
 
   build:
     needs: [source, tests]
