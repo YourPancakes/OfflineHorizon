@@ -132,7 +132,12 @@ fn all_language_tables_keep_placeholders_and_fall_back_for_missing_strings() {
     for (language, table) in &tables {
         for english in &asked {
             let expected = table.get(english).map(String::as_str).unwrap_or(english);
-            assert_eq!(tr_in(*language, english), expected, "{}: {english:?}", language.code());
+            assert_eq!(
+                tr_in(*language, english),
+                expected,
+                "{}: {english:?}",
+                language.code()
+            );
         }
         for (en, said) in table {
             assert_eq!(holes(en), holes(said), "{}: {en:?}", language.code());
@@ -208,7 +213,10 @@ fn a_missing_string_shows_in_english() {
     assert_eq!(tr_in(Language::Ukrainian, "Settings"), "Налаштування");
     assert_eq!(tr_in(Language::English, "Settings"), "Settings");
     assert_eq!(tr_in(Language::French, "No such string"), "No such string");
-    assert_eq!(tr_in(Language::Hungarian, "No such string"), "No such string");
+    assert_eq!(
+        tr_in(Language::Hungarian, "No such string"),
+        "No such string"
+    );
     assert_eq!(tr_in(Language::Polish, "No such string"), "No such string");
     assert_eq!(
         tr_in(Language::PortugueseBrazil, "Settings"),
@@ -232,15 +240,37 @@ fn offline_profile_controls_have_localizations_in_primary_languages() {
         "Switch profiles or add a new offline nickname.",
         "WARNING",
     ];
-    for language in [Language::French, Language::Polish, Language::Hungarian, Language::Russian] {
+    for language in [
+        Language::French,
+        Language::Polish,
+        Language::Hungarian,
+        Language::Russian,
+    ] {
         let table: HashMap<String, String> = serde_json::from_str(language.source()).unwrap();
         for english in keys {
             let translated = table.get(english).unwrap_or_else(|| {
-                panic!("lang/{}.json has no offline UI translation: {english}", language.code())
+                panic!(
+                    "lang/{}.json has no offline UI translation: {english}",
+                    language.code()
+                )
             });
-            assert!(!translated.trim().is_empty(), "{}: {english}", language.code());
-            assert_ne!(translated, english, "{}: untranslated {english}", language.code());
-            assert_eq!(tr_in(language, english), translated, "{}: {english}", language.code());
+            assert!(
+                !translated.trim().is_empty(),
+                "{}: {english}",
+                language.code()
+            );
+            assert_ne!(
+                translated,
+                english,
+                "{}: untranslated {english}",
+                language.code()
+            );
+            assert_eq!(
+                tr_in(language, english),
+                translated,
+                "{}: {english}",
+                language.code()
+            );
         }
     }
 }

@@ -58,6 +58,12 @@ class ReleasePlanningTests(unittest.TestCase):
             "dispatch",
         )
 
+    def test_rebuilt_release_records_its_source_when_the_tag_is_older(self):
+        kind = "offline-game.yml"
+        rebuilt = release(kind, sha="b" * 40)
+        rebuilt["body"] = f"OfflineHorizon release\n\nBuild commit: {HEAD}\n"
+        self.assertEqual(guard.plan(kind, HEAD, [rebuilt], []), "published")
+
     def test_partial_release_blocks_unsafe_overwrite(self):
         for kind in guard.REQUIRED:
             self.assertEqual(

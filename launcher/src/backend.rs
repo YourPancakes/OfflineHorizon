@@ -5498,7 +5498,10 @@ pub fn {f}("
         assert!(is_launcher_tag("launcher@0.2.0"));
         assert_eq!(launcher_version("v2026.10.13"), None);
         assert_eq!(launcher_version("v0.2.0"), Some("0.2.0"));
-        assert!(is_launcher_tag("v0.2.9"), "a combined OfflineHorizon release updates the launcher");
+        assert!(
+            is_launcher_tag("v0.2.9"),
+            "a combined OfflineHorizon release updates the launcher"
+        );
         assert_eq!(launcher_version("launcher-vx"), None);
         let list = serde_json::json!([
             {"tag_name": "v2026.10.12", "assets": [{"name": "horizon-linux-x86_64.tar.gz", "browser_download_url": "u", "size": 1}]},
@@ -5783,7 +5786,10 @@ pub fn {f}("
         assert_eq!(own_tag_of(None, Some("0.2.9")), "v0.2.9");
         assert_eq!(own_tag_of(Some(""), Some("0.2.9")), "v0.2.9");
         // A build from source targets the same combined release as the game.
-        assert_eq!(own_tag_of(None, None), format!("v{}", env!("CARGO_PKG_VERSION")));
+        assert_eq!(
+            own_tag_of(None, None),
+            format!("v{}", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     /// The update path to 0.2 (docs/versioning.md): launchers from before it take the last
@@ -6191,7 +6197,12 @@ pub fn {f}("
         assert_eq!(releases.len(), 2);
         assert_eq!(releases[0].tag, "v0.2.9");
         assert_eq!(releases[0].asset.as_ref().unwrap().0, "combined-release");
-        assert_eq!(launcher_update_from(&releases, "launcher@0.2.0").unwrap().tag, "v0.2.9");
+        assert_eq!(
+            launcher_update_from(&releases, "launcher@0.2.0")
+                .unwrap()
+                .tag,
+            "v0.2.9"
+        );
         assert!(launcher_update_from(&releases, "v0.2.9").is_none());
     }
 
@@ -6223,7 +6234,10 @@ pub fn {f}("
             ]
         }]);
         let game = parse_releases(&releases, Some(game_asset), is_game_tag);
-        assert_eq!(game[0].asset, Some(("https://example.test/game".into(), 200)));
+        assert_eq!(
+            game[0].asset,
+            Some(("https://example.test/game".into(), 200))
+        );
         let missing = parse_releases(&releases, Some("no-game-build.zip"), is_game_tag);
         assert!(missing[0].asset.is_none());
     }

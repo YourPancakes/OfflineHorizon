@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: offlinehorizon-game-release
+  group: offlinehorizon-game-release-${{ github.event.pull_request.number || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -97,7 +97,7 @@ jobs:
         run: cargo test --locked --lib -p horizon-core -p horizon-friends -p horizon-client
 
   build:
-    needs: [source, tests]
+    needs: source
     if: needs.source.outputs.publish == 'true'
     continue-on-error: false
     strategy:
@@ -334,12 +334,25 @@ jobs:
           assets=(dist/horizon-*.tar.gz dist/horizon-*.zip dist/horizon-launcher-setup*.exe dist/horizon-launcher-macos-*.dmg)
           notes=$(printf '%s\n\nBuild commit: %s\n' \
             'OfflineHorizon game, launcher, tools and dedicated server.' "$GITHUB_SHA")
+          head=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::notice::A newer source commit is on main. Publication belongs to that commit."
+            exit 0
+          fi
           releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq 'add')
           if [[ "$TAG" == 'v0.2.9' ]] && jq -e --arg tag "$TAG" 'any(.[]; .tag_name == $tag and .draft == false)' <<< "$releases" > /dev/null; then
             gh release upload "$TAG" "${assets[@]}" --clobber
             gh release upload "$TAG" dist/SHA256SUMS --clobber
             gh release edit "$TAG" --title "OfflineHorizon $VERSION" --notes "$notes"
           else
+            if [[ "$TAG" == 'v0.2.9' ]]; then
+              refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG")
+              old=$(jq -r --arg ref "refs/tags/$TAG" '.[] | select(.ref == $ref) | .object.sha' <<< "$refs")
+              if [[ -n "$old" && "$old" != "$GITHUB_SHA" ]]; then
+                gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" \
+                  -f sha="$GITHUB_SHA" -F force=true > /dev/null
+              fi
+            fi
             gh release create "$TAG" "${assets[@]}" dist/SHA256SUMS \
               --target "$GITHUB_SHA" --title "OfflineHorizon $VERSION" --notes "$notes" --latest
           fi
