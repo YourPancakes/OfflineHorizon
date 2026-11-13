@@ -90,24 +90,13 @@ jobs:
           66a9810f5a2ba01cd2eaf5c4f927ebd55d3dba910912642831dc1b7d28bb05b3  horizon-launcher-macos-x64.dmg
           CHECKSUMS
           (cd dist && sha256sum --check SHA256SUMS)
-      - name: Create and verify the single combined v0.2.9 release
+      - name: Verify and publish the existing complete v0.2.9 draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view v0.2.9 > /dev/null 2>&1; then
-            echo "::error::Release already exists; refusing to overwrite it"
-            exit 1
-          fi
-          refs=$(gh api "repos/$GH_REPO/git/matching-refs/tags/v0.2.9")
-          jq -e 'length == 0' <<< "$refs" > /dev/null
-          files=(dist/horizon-launcher-linux-x86_64.tar.gz dist/horizon-linux-x86_64.tar.gz dist/horizon-server-linux-x86_64.tar.gz dist/horizon-launcher-macos-arm64.zip dist/horizon-launcher-macos-x64.zip dist/horizon-launcher-windows-arm64.zip dist/horizon-launcher-windows-x64.zip dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-windows-arm64.zip dist/horizon-windows-x64.zip dist/horizon-launcher-setup-arm64.exe dist/horizon-launcher-setup.exe dist/horizon-launcher-macos-arm64.dmg dist/horizon-launcher-macos-x64.dmg)
-          for file in "${files[@]}"; do test -s "$file"; done
-          # The GitHub Actions token cannot create a release pointing at an old
-          # commit whose workflow files differ from the default branch.
-          # Allow only workflow-file changes since the exact tested source.
           head=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
           test "$head" = "$GITHUB_SHA"
           comparison=$(gh api "repos/$GH_REPO/compare/590779d9c56df25d2d12cc46ed3d8870c936b871...$GITHUB_SHA")
@@ -115,18 +104,32 @@ jobs:
             .status == "ahead" and
             ([.files[].filename] | sort) == [".github/workflows/offline-game.yml"]
           ' <<< "$comparison" > /dev/null
-          gh release create v0.2.9 "${files[@]}" dist/SHA256SUMS \
-            --target "$GITHUB_SHA" --title "OfflineHorizon 0.2.9" \
-            --notes "OfflineHorizon game, launcher, tools and dedicated server.\n\nBuild commit: 590779d9c56df25d2d12cc46ed3d8870c936b871" \
-            --draft
-          assets=$(gh api "repos/$GH_REPO/releases/tags/v0.2.9" --jq '.assets')
-          for file in "${files[@]}" dist/SHA256SUMS; do
-            read -r digest _ < <(sha256sum "$file")
-            jq -e --arg name "${file##*/}" --arg digest "sha256:$digest" '
-              any(.[]; .name == $name and .state == "uploaded" and .digest == $digest)
+          releases=$(gh api "repos/$GH_REPO/releases?per_page=100")
+          jq -e '
+            ([.[] | select(.tag_name == "v0.2.9")] | length) == 1 and
+            ([.[] | select(.tag_name == "v0.2.9" and .draft == true and
+              .target_commitish == "fe24dd79d5a9da370d29ec570538cc017a29b3d2" and
+              ((.body // "") | contains("Build commit: 590779d9c56df25d2d12cc46ed3d8870c936b871")))] | length) == 1
+          ' <<< "$releases" > /dev/null
+          release_id=$(jq -r '.[] | select(.tag_name == "v0.2.9") | .id' <<< "$releases")
+          assets=$(jq -c '.[] | select(.tag_name == "v0.2.9") | .assets' <<< "$releases")
+          jq -e 'length == 16 and all(.[]; .state == "uploaded" and .size > 0)' <<< "$assets" > /dev/null
+          while read -r digest file; do
+            test -s "dist/$file"
+            jq -e --arg name "$file" --arg digest "sha256:$digest" '
+              ([.[] | select(.name == $name and .digest == $digest and .state == "uploaded")] | length) == 1
             ' <<< "$assets" > /dev/null
-          done
-          gh release edit v0.2.9 --draft=false --latest
+          done < dist/SHA256SUMS
+          read -r manifest_digest _ < <(sha256sum dist/SHA256SUMS)
+          jq -e --arg digest "sha256:$manifest_digest" '
+            ([.[] | select(.name == "SHA256SUMS" and .digest == $digest and .state == "uploaded")] | length) == 1
+          ' <<< "$assets" > /dev/null
+          published=$(gh api --method PATCH "repos/$GH_REPO/releases/$release_id" \
+            -f target_commitish="$GITHUB_SHA" -F draft=false -f make_latest=true)
+          jq -e --arg sha "$GITHUB_SHA" '
+            .draft == false and .tag_name == "v0.2.9" and
+            .target_commitish == $sha and (.assets | length) == 16
+          ' <<< "$published" > /dev/null
 
   source:
     if: github.repository == 'YourPancakes/OfflineHorizon' && github.event.repository.private == false && !contains(github.event.head_commit.message, '[release-recovery]')
