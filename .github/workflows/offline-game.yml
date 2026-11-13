@@ -24,8 +24,102 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+
+  recover_v029:
+    # One-time recovery: publish the verified files from run 43462391654,
+    # not a new build. Release still contains game + launcher under v0.2.9.
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main' && github.event_name == 'push' && contains(github.event.head_commit.message, '[release-recovery]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify source run, successful builds and retained archives
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          run=$(gh api "repos/$GH_REPO/actions/runs/43462391654")
+          jq -e --arg sha "590779d9c56df25d2d12cc46ed3d8870c936b871" '
+            .head_sha == $sha and .head_branch == "main" and
+            .event == "push" and .status == "completed" and .conclusion == "failure"
+          ' <<< "$run" > /dev/null
+          jobs=$(gh api "repos/$GH_REPO/actions/runs/43462391654/jobs?per_page=100")
+          jq -e '
+            ([.jobs[] | select(.name == "source" and .conclusion == "success")] | length) == 1 and
+            ([.jobs[] | select(.name == "tests" and .conclusion == "success")] | length) == 1 and
+            ([.jobs[] | select(.name | startswith("build (")) | select(.conclusion == "success")] | length) == 5 and
+            ([.jobs[] | select(.name == "release" and .conclusion == "failure")] | length) == 1
+          ' <<< "$jobs" > /dev/null
+          artifacts=$(gh api "repos/$GH_REPO/actions/runs/43462391654/artifacts?per_page=100")
+          jq -e '
+            (.artifacts | length) == 11 and
+            all(.artifacts[]; (.expired == false and .size_in_bytes > 0))
+          ' <<< "$artifacts" > /dev/null
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 43462391654
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: dist
+      - name: Check exact SHA-256 of all 15 finished files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > dist/SHA256SUMS <<'CHECKSUMS'
+          fac6b0d837a68482656a6ccc544d4a440fb9c8a2d78f8783e289d81de87de645  horizon-launcher-linux-x86_64.tar.gz
+          a05a9054e6e095812bcbb19a2186ef30fac0c1e113ebce5886d74be5e85301c1  horizon-linux-x86_64.tar.gz
+          c6b88b3783377be93da7e12ff851960de1a21eee565ebb3cc41f8dec02c8a246  horizon-server-linux-x86_64.tar.gz
+          d6f170385fd1932e34aecbf105a30f8bad28ece29c6593511ee2305f44e3f034  horizon-launcher-macos-arm64.zip
+          4fa8557d77f1833273bdc3d4eb3840a8aad3be1d8860595c4eb6b4fd23aff5e3  horizon-launcher-macos-x64.zip
+          167bc5c381378d367ad40b650b1867a32a93fee066fbfc6e27f5d3fd4eb6ccbc  horizon-launcher-windows-arm64.zip
+          5c10b924d2e95920d2f1b9ea39587b331237477847fbfbd30827eef3a6dfd140  horizon-launcher-windows-x64.zip
+          9b3845834fc138ff8fae16d746ee26fd4281e642df881b622e09f2b690ef1193  horizon-macos-arm64.zip
+          91f8ea4cc2fb41e2727aa903015aa59be8e31850200bea555874a8326597d411  horizon-macos-x64.zip
+          5e856d315931e70ef3399e4d645a22416c108910569126b4c798e597d2e691fc  horizon-windows-arm64.zip
+          96d2014ef502b8b82204b4f01b015eeed4bfc350db48414f17822f63c17ccc3b  horizon-windows-x64.zip
+          5c980210aa5436e7ef7f34aa614f63c84637dcef57c8ec2b3ac8b818c3020a06  horizon-launcher-setup-arm64.exe
+          5fcf403477f972fdcac3fcc27fe46ac3da8aae7f68045387d52fbe195bd6a5e8  horizon-launcher-setup.exe
+          50f148e11999fdd5d26823c9932819f8f4b4aa9de5de6a078c399e3c83d98757  horizon-launcher-macos-arm64.dmg
+          66a9810f5a2ba01cd2eaf5c4f927ebd55d3dba910912642831dc1b7d28bb05b3  horizon-launcher-macos-x64.dmg
+          CHECKSUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+      - name: Create and verify the single combined v0.2.9 release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view v0.2.9 > /dev/null 2>&1; then
+            echo "::error::Release already exists; refusing to overwrite it"
+            exit 1
+          fi
+          refs=$(gh api "repos/$GH_REPO/git/matching-refs/tags/v0.2.9")
+          jq -e 'length == 0' <<< "$refs" > /dev/null
+          files=(dist/horizon-launcher-linux-x86_64.tar.gz dist/horizon-linux-x86_64.tar.gz dist/horizon-server-linux-x86_64.tar.gz dist/horizon-launcher-macos-arm64.zip dist/horizon-launcher-macos-x64.zip dist/horizon-launcher-windows-arm64.zip dist/horizon-launcher-windows-x64.zip dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-windows-arm64.zip dist/horizon-windows-x64.zip dist/horizon-launcher-setup-arm64.exe dist/horizon-launcher-setup.exe dist/horizon-launcher-macos-arm64.dmg dist/horizon-launcher-macos-x64.dmg)
+          for file in "${files[@]}"; do test -s "$file"; done
+          gh release create v0.2.9 "${files[@]}" dist/SHA256SUMS \
+            --target "590779d9c56df25d2d12cc46ed3d8870c936b871" --title "OfflineHorizon 0.2.9" \
+            --notes "OfflineHorizon game, launcher, tools and dedicated server.\n\nBuild commit: 590779d9c56df25d2d12cc46ed3d8870c936b871" \
+            --draft
+          assets=$(gh api "repos/$GH_REPO/releases/tags/v0.2.9" --jq '.assets')
+          for file in "${files[@]}" dist/SHA256SUMS; do
+            read -r digest _ < <(sha256sum "$file")
+            jq -e --arg name "${file##*/}" --arg digest "sha256:$digest" '
+              any(.[]; .name == $name and .state == "uploaded" and .digest == $digest)
+            ' <<< "$assets" > /dev/null
+          done
+          gh release edit v0.2.9 --draft=false --latest
+
   source:
-    if: github.repository == 'YourPancakes/OfflineHorizon' && github.event.repository.private == false
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.event.repository.private == false && !contains(github.event.head_commit.message, '[release-recovery]')
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -302,6 +396,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -325,6 +422,7 @@ jobs:
           cat SHA256SUMS
       - name: Publish tested OfflineHorizon game and launcher
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.source.outputs.tag }}
           VERSION: ${{ needs.source.outputs.version }}
