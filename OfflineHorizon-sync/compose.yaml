@@ -1,0 +1,72 @@
+services:
+  sync:
+    build: .
+    restart: unless-stopped
+    init: true
+    # /work is owned by UID 10001. Use a separate private token file
+    # owned by that same UID instead of running synchronization as root.
+    user: '10001:10001'
+    cap_drop:
+      - ALL
+    environment:
+      UPSTREAM_URL: https://github.com/horizon-rust/horizon.git
+      FORK_URL: https://github.com/YourPancakes/OfflineHorizon.git
+      TOKEN_FILE: /run/secrets/github_sync_token
+      SYNC_PUBLISH: ${SYNC_PUBLISH:-0}
+      SYNC_SCHEDULE_STATE: /work/.last-sync-slot
+      SOURCE_PATH: /source
+      WORK_ROOT: /work
+      BASE_SHA: b880384691b88d317553067109d28e785990bda3
+    volumes:
+      - ../Offline-Horizon:/source:ro
+      - ./secrets/github_sync_token:/run/secrets/github_sync_token:ro
+      - sync-work:/work
+    mem_limit: 768m
+    cpus: 0.75
+    pids_limit: 96
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  release-publisher:
+    build: .
+    restart: unless-stopped
+    init: true
+    user: '0:0'
+    cap_drop:
+      - ALL
+    entrypoint: ["python", "/app/release_fallback.py"]
+    command: ["auto", "--calendar", "--schedule-state", "/releases/.last-publisher-slot"]
+    environment:
+      RELEASE_REPO: YourPancakes/OfflineHorizon
+      RELEASE_TAG: v0.2.9
+      RELEASE_SHA: d2e75698121d9aef17d4547f702bd87ca7e65f6b
+      RELEASE_RUN_ID: "43181646362"
+      RELEASE_DIR: /releases/v0.2.9
+      TOKEN_FILE: /run/secrets/github_release_token
+    volumes:
+      - /opt/OfflineHorizon-releases:/releases:rw
+      - ./secrets:/run/secrets:ro
+    mem_limit: 160m
+    cpus: 0.12
+    pids_limit: 32
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=16m
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+volumes:
+  sync-work:

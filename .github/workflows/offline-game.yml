@@ -1,0 +1,298 @@
+name: OfflineHorizon game release
+
+# One combined OfflineHorizon vX.Y.Z release contains the game, server, and
+# our launcher for every target architecture. No separate launcher@ release.
+# The sync controller admits upstream
+# commits only after upstream checks/verify, checks/launcher and parity-main pass.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: offlinehorizon-game-release
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source:
+    # Default to the low-resource external publisher until hosted builders return.
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Identify fork's upstream base SHA
+        run: |
+          set -euo pipefail
+          test -s .offline-horizon-upstream-sha
+          grep -Eq '^[a-f0-9]{40}$' .offline-horizon-upstream-sha
+          echo "Upstream source base: $(cat .offline-horizon-upstream-sha)"
+      - name: Check release sources do not contain Minecraft data
+        run: python3 tools/check_public_tree.py
+      - name: Version for this build
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          existing=$(jq -r --arg head "$GITHUB_SHA" '.[] | select(.target_commitish == $head) | .tag_name | select(test("^v0\\.2\\.[0-9]+$"))' <<< "$releases")
+          if [[ -n "$existing" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Existing game release for this source: $existing"
+            exit 0
+          fi
+          # Increment independently of GitHub workflow run numbers and launcher tags.
+          last=$(jq -r '.[].tag_name | select(test("^v0\\.2\\.[0-9]+$")) | sub("^v0\\.2\\."; "") | tonumber' <<< "$releases" | sort -n | tail -1)
+          version="0.2.$((${last:-0} + 1))"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+  tests:
+    needs: source
+    if: needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: offline-game-tests
+      - name: Linux test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - name: Rust core, friends, and client library tests
+        run: cargo test --locked --lib -p horizon-core -p horizon-friends -p horizon-client
+
+  build:
+    needs: [source, tests]
+    if: needs.source.outputs.publish == 'true'
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux-x64
+            archive: horizon-linux-x86_64.tar.gz
+            folder: horizon-linux-x86_64
+            extension: ''
+          - os: windows-2025
+            name: windows-x64
+            archive: horizon-windows-x64.zip
+            folder: horizon-windows-x64
+            extension: '.exe'
+            rustflags: -C target-feature=+crt-static
+          - os: windows-11-vs2026-arm
+            name: windows-arm64
+            archive: horizon-windows-arm64.zip
+            folder: horizon-windows-arm64
+            extension: '.exe'
+            rustflags: -C target-feature=+crt-static
+          - os: macos-15
+            name: macos-arm64
+            archive: horizon-macos-arm64.zip
+            folder: horizon-macos-arm64
+            extension: ''
+          - os: macos-15-intel
+            name: macos-x64
+            archive: horizon-macos-x64.zip
+            folder: horizon-macos-x64
+            extension: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      HORIZON_VERSION: ${{ needs.source.outputs.version }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      HORIZON_TELEMETRY_URL: 'off'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: offline-game-${{ matrix.name }}
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig1-dev libvulkan-dev
+      - name: Build all game and server executables
+        run: |
+          cargo build --release --locked \
+            -p horizon-official --bin horizon-official \
+            -p horizon-client-lib --bin horizon-ctl \
+            -p horizon-prepare --bin horizon-prepare \
+            -p horizon-server --bin horizon-server
+      - name: Smoke check compiled binaries
+        run: |
+          set -euo pipefail
+          bin=target/release
+          "$bin/horizon-official${{ matrix.extension }}" --help > /dev/null
+          "$bin/horizon-ctl${{ matrix.extension }}" --help > /dev/null
+          "$bin/horizon-prepare${{ matrix.extension }}" --help > /dev/null
+          "$bin/horizon-server${{ matrix.extension }}" --version
+      - name: Pack the game, tools, and dedicated server
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.folder }}"
+          for executable in horizon-ctl horizon-prepare horizon-server; do
+            cp "target/release/$executable${{ matrix.extension }}" "dist/${{ matrix.folder }}/"
+          done
+          cp "target/release/horizon-official${{ matrix.extension }}" \
+             "dist/${{ matrix.folder }}/horizon-client${{ matrix.extension }}"
+          # The user's own Minecraft assets are prepared locally. Ship
+          # Horizon's open source preparer inputs, never Mojang files.
+          git archive HEAD tools mods/horizon/src/test/java crates/horizon-prepare \
+            research-lock.json LICENSE packaging/PLAY.txt | \
+            tar -xf - -C "dist/${{ matrix.folder }}"
+          test -f "dist/${{ matrix.folder }}/research-lock.json"
+          cp "dist/${{ matrix.folder }}/packaging/PLAY.txt" "dist/${{ matrix.folder }}/PLAY.txt"
+          test -s "dist/${{ matrix.folder }}/PLAY.txt"
+          cd dist
+          if [[ "${{ matrix.archive }}" == *.tar.gz ]]; then
+            tar -czf "${{ matrix.archive }}" "${{ matrix.folder }}"
+          elif [[ "$RUNNER_OS" == 'Windows' ]]; then
+            7z a -tzip "${{ matrix.archive }}" "${{ matrix.folder }}" > /dev/null
+          else
+            ditto -c -k --norsrc --noextattr --noqtn --keepParent \
+              "${{ matrix.folder }}" "${{ matrix.archive }}"
+          fi
+          test -s "${{ matrix.archive }}"
+      - name: Build launcher for the same game release
+        env:
+          HORIZON_LAUNCHER_VERSION: ${{ needs.source.outputs.version }}
+          HORIZON_LAUNCHER_TAG: ${{ needs.source.outputs.tag }}
+        run: |
+          set -euo pipefail
+          features=()
+          if [[ "$RUNNER_OS" == "macOS" ]] && ! xcrun metal --version >/dev/null 2>&1; then
+            features=(--features gpui_platform/runtime_shaders)
+          fi
+          cargo build --release --locked --manifest-path launcher/Cargo.toml --bin horizon-launcher "${features[@]}"
+          bin="launcher/target/release/horizon-launcher${{ matrix.extension }}"
+          [[ "$("$bin" --version)" == "horizon-launcher $HORIZON_LAUNCHER_VERSION" ]] ||
+            { echo "::error::Launcher and game release versions disagree"; exit 1; }
+          mkdir -p dist
+          case "${{ matrix.name }}" in
+            linux-x64)
+              tar -czf dist/horizon-launcher-linux-x86_64.tar.gz -C launcher/target/release horizon-launcher
+              ;;
+            windows-x64|windows-arm64)
+              name="horizon-launcher-windows-x64.zip"
+              setup="horizon-launcher-setup.exe"
+              if [[ "${{ matrix.name }}" == "windows-arm64" ]]; then
+                name="horizon-launcher-windows-arm64.zip"
+                setup="horizon-launcher-setup-arm64.exe"
+              fi
+              (cd launcher/target/release && 7z a -tzip "$GITHUB_WORKSPACE/dist/$name" horizon-launcher.exe)
+              cp "$bin" "dist/$setup"
+              ;;
+            macos-arm64|macos-x64)
+              arch=arm64
+              [[ "${{ matrix.name }}" == "macos-x64" ]] && arch=x64
+              python3 -m venv "$RUNNER_TEMP/dmgbuild"
+              "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.5
+              DMGBUILD="$RUNNER_TEMP/dmgbuild/bin/dmgbuild" \
+                bash packaging/macos/package.sh "$bin" "$HORIZON_LAUNCHER_VERSION" dist "$arch"
+              rm -rf dist/Horizon.app
+              ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launcher-${{ matrix.name }}
+          path: |
+            dist/horizon-launcher-*.tar.gz
+            dist/horizon-launcher-*.zip
+            dist/horizon-launcher-*.dmg
+            dist/horizon-launcher-setup*.exe
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build dedicated Linux server engine without audio or controllers
+        if: matrix.name == 'linux-x64'
+        run: cargo build --release --locked -p horizon-client --no-default-features --bin horizon-client
+      - name: Package dedicated Linux server
+        if: matrix.name == 'linux-x64'
+        run: |
+          set -euo pipefail
+          dir=dist/horizon-server-linux-x86_64
+          mkdir -p "$dir"
+          cp target/release/horizon-client "$dir/horizon-engine"
+          cp target/release/horizon-server "$dir/horizon-server"
+          cp target/release/horizon-prepare "$dir/horizon-prepare"
+          git archive HEAD tools mods/horizon/src/test/java crates/horizon-prepare \
+            research-lock.json LICENSE packaging/PLAY.txt | tar -xf - -C "$dir"
+          cp "$dir/packaging/PLAY.txt" "$dir/PLAY.txt"
+          (cd dist && tar -czf horizon-server-linux-x86_64.tar.gz horizon-server-linux-x86_64)
+      - uses: actions/upload-artifact@v4
+        if: matrix.name == 'linux-x64'
+        with:
+          name: horizon-server-linux-x86_64.tar.gz
+          path: dist/horizon-server-linux-x86_64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: [source, tests, build]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Verify required archives and write SHA-256 sums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          for asset in horizon-linux-x86_64.tar.gz horizon-windows-x64.zip horizon-windows-arm64.zip \
+                       horizon-macos-arm64.zip horizon-macos-x64.zip \
+                       horizon-server-linux-x86_64.tar.gz \
+                       horizon-launcher-linux-x86_64.tar.gz \
+                       horizon-launcher-windows-x64.zip horizon-launcher-windows-arm64.zip \
+                       horizon-launcher-macos-arm64.zip horizon-launcher-macos-x64.zip \
+                       horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe; do
+            test -s "$asset" || { echo "::error::Missing $asset"; exit 1; }
+          done
+          sha256sum horizon-*.tar.gz horizon-*.zip horizon-launcher-setup*.exe horizon-launcher-macos-*.dmg > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish tested OfflineHorizon game and launcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.source.outputs.tag }}
+          VERSION: ${{ needs.source.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" dist/horizon-*.tar.gz dist/horizon-*.zip \
+            dist/horizon-launcher-setup*.exe dist/horizon-launcher-macos-*.dmg dist/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "OfflineHorizon $VERSION" \
+            --notes "OfflineHorizon game, launcher, tools and dedicated server. Vanilla Minecraft resources are not redistributed." \
+            --latest

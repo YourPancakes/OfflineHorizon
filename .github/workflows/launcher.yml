@@ -1,0 +1,34 @@
+name: OfflineHorizon launcher compatibility
+
+# Manual diagnostic only. The launcher is built and published alongside the
+# game by offline-game.yml under ONE shared vX.Y.Z GitHub Release.
+# This workflow intentionally has no standalone launcher publishing job.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  launcher-check:
+    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+      - name: Native Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-x11-dev libwayland-dev libx11-xcb-dev libfontconfig1-dev libvulkan-dev
+      - name: Verify unified release routing and version
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path launcher/Cargo.toml --lib tags_never_mix
+          cargo test --locked --manifest-path launcher/Cargo.toml --lib combined_release_is_used_for_launcher_and_legacy_release_is_older
+          cargo test --locked --manifest-path launcher/Cargo.toml --lib launcher_releases_never_fall_back_to_game_repository
+          cargo build --locked --release --manifest-path launcher/Cargo.toml --bin horizon-launcher
+          launcher/target/release/horizon-launcher --version
