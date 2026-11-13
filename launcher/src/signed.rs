@@ -183,7 +183,10 @@ mod tests {
         assert!(digest("v2099.01.01", "other.zip", &keys, signed).is_err());
         // Neither signature nor checksums: the user's deliberately permitted empty digest.
         let unsigned = |_: &str| -> Result<Option<Vec<u8>>, String> { Ok(None) };
-        assert_eq!(digest("v2099.01.01", "horizon.zip", &keys, unsigned), Ok(String::new()));
+        assert_eq!(
+            digest("v2099.01.01", "horizon.zip", &keys, unsigned),
+            Ok(String::new())
+        );
         // Checksums that can't be fetched are an error too, never a pass.
         let offline = |_: &str| -> Result<Option<Vec<u8>>, String> { Err("No connection".into()) };
         assert!(digest("v2099.01.01", "horizon.zip", &keys, offline).is_err());

@@ -92,6 +92,22 @@ def manifest_paths(path: Path) -> list[str]:
     return paths
 
 
+def git_tree_files(repo: Path, rev: str) -> dict[str, tuple[str, str]]:
+    """Read exact file modes and blob hashes from an immutable Git tree."""
+    out: dict[str, tuple[str, str]] = {}
+    for row in git(repo, "ls-tree", "-r", "-z", rev).split("\0"):
+        if not row:
+            continue
+        meta, sep, path = row.partition("\t")
+        parts = meta.split()
+        if not sep or not path or len(parts) != 3 or not SHA_RE.fullmatch(parts[2]):
+            raise SyncError("Invalid Git tree entry during synchronization")
+        if path in out:
+            raise SyncError("Duplicate Git tree path during synchronization")
+        out[path] = (parts[0], parts[2])
+    return out
+
+
 def upstream_sha(url: str) -> str:
     output = command(["git", "ls-remote", url, "refs/heads/main"], timeout=45)
     parts = output.split()
@@ -389,12 +405,16 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                         "current": old_sha, "pushed": False}
 
             git(repo, "remote", "add", "upstream", upstream)
-            # Fetch the approved historical SHA, NOT moving main/HEAD.
+            # Fetch exactly two immutable snapshots, in ONE shallow operation.
+            # Do not filter blobs: lazy blob downloads combined with a changing
+            # shallow boundary caused Git's "shallow file has changed" failure.
+            # This bounds network work instead of fetching all upstream history.
+            snapshots = [latest, old_sha or base_sha]
             git(repo, "fetch", "--quiet", "--no-tags", "--depth=1",
-                "upstream", latest, env=env)
-            fetched = git(repo, "rev-parse", "FETCH_HEAD")
-            if fetched != latest:
-                raise SyncError("Fetched upstream SHA does not match the green CI commit")
+                "upstream", *snapshots, env=env)
+            for expected in snapshots:
+                if git(repo, "cat-file", "-t", expected) != "commit":
+                    raise SyncError("Fetched upstream commit is missing or invalid")
             patch = staging / "upstream.patch"
 
             if old_sha is None:
@@ -410,29 +430,37 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                                     + proc.stderr.decode(errors="replace")[-1800:])
                 if before != git(source, "status", "--porcelain"):
                     raise SyncError("Local source changed while snapshotting; retry later")
-                # Fetch the old base blobs needed by git apply --3way.
-                git(repo, "fetch", "--quiet", "--no-tags", "--depth=1",
-                    "upstream", base_sha, env=env)
+                # The original base was fetched together with the green SHA.
                 git(repo, "checkout", "--quiet", "--detach", latest, env=env)
                 mode = "bootstrap"
             else:
-                git(repo, "fetch", "--quiet", "--no-tags", "--depth=1",
-                    "upstream", old_sha, env=env)
-                # Two upstream snapshots suffice; full repository history is not needed.
-                with patch.open("wb") as f:
-                    proc = subprocess.run(
-                        ["git", "-c", "safe.directory=*", "-C", str(repo),
-                         "diff", "--binary", "--full-index", "--no-renames",
-                         old_sha, latest, "--"],
-                        stdout=f, stderr=subprocess.PIPE, timeout=900, env=env)
-                if proc.returncode:
-                    raise SyncError("Cannot compute upstream delta: "
-                                    + proc.stderr.decode(errors="replace")[-1800:])
+                # Both snapshots are available from the combined fetch.
+                # The fork is an independent snapshot; its non-owned files
+                # need not match the recorded upstream tree byte-for-byte.
+                # The reviewed manifest owns fork customizations. Converge
+                # all other files to the exact green upstream snapshot.
+                current_files = git_tree_files(repo, "HEAD")
+                old_files = git_tree_files(repo, old_sha)
+                new_files = git_tree_files(repo, latest)
+                owned = set(paths)
+                official_update = [
+                    p for p in new_files
+                    if p not in owned and new_files[p] != current_files.get(p)
+                ]
+                official_removal = [
+                    p for p in current_files
+                    if p not in owned and p in old_files and p not in new_files
+                ]
+                update_paths = sorted(set(official_update + official_removal))
+                for start in range(0, len(update_paths), 100):
+                    git(repo, "restore", f"--source={latest}", "--staged",
+                        "--worktree", "--", *update_paths[start:start + 100], env=env)
+                patch.write_bytes(b"")
                 mode = "incremental"
 
             if patch.stat().st_size == 0 and mode == "bootstrap":
                 raise SyncError("Initial fork overlay is empty; refusing to lose modifications")
-            if patch.stat().st_size:
+            if mode == "bootstrap" and patch.stat().st_size:
                 try:
                     git(repo, "apply", "--3way", "--whitespace=nowarn", str(patch), env=env)
                 except SyncError:
@@ -509,7 +537,9 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
             outcome = {"result": "prepared" if dry_run else "pushed", "mode": mode,
                        "upstream": latest, "upstream_head": head,
                        "fork_parent": fork_parent, "commit": commit,
-                       "patch_bytes": patch.stat().st_size, "summary": changed,
+                       "patch_bytes": patch.stat().st_size,
+                       "official_file_updates": len(update_paths) if mode == "incremental" else 0,
+                       "summary": changed,
                        "pushed": not dry_run}
             if dry_run:
                 # No user files, GitHub branches, or release assets changed.

@@ -712,7 +712,10 @@ fn the_game_runs_offline_without_an_owner_and_uses_online_session_when_available
     accounts.play_as("other").unwrap();
     let pass = launch_for_game(&ep, Some("test-client"), &store, &mut accounts).unwrap();
     assert!(pass.session.is_none());
-    assert!(pass.offline.unwrap().starts_with("Alex is no longer signed in"));
+    assert!(pass
+        .offline
+        .unwrap()
+        .starts_with("Alex is no longer signed in"));
     // The ownership service's refusal does not prevent offline play.
     let (_, ep) = mock(|m| m.owns_game = false);
     let mut accounts = signed_in(&store, &secrets("mc-token", true));
@@ -2371,7 +2374,10 @@ fn a_launch_as_another_account_leaves_the_selected_one() {
     // doesn't let Alex play), and Notch is still the one `account select` picked.
     let pass = launch_as(&offline(), Some("test-client"), &store, &mut accounts, alex).unwrap();
     assert!(pass.session.is_none());
-    assert!(pass.offline.unwrap().starts_with("Alex is no longer signed in"));
+    assert!(pass
+        .offline
+        .unwrap()
+        .starts_with("Alex is no longer signed in"));
     assert_eq!(accounts.selected.as_deref(), Some(UUID));
     // Notch plays with the last answer while the services can't be reached.
     let pass = launch_as(&offline(), Some("test-client"), &store, &mut accounts, UUID).unwrap();

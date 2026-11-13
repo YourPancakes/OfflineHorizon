@@ -491,6 +491,38 @@ class GitSynchronizationTests(unittest.TestCase):
         self.assertEqual(unchanged["result"], "unchanged")
         self.assertEqual(list(self.work.glob("sync-*")), [])
 
+    def test_incremental_reconciles_stale_unowned_content_and_new_files(self):
+        (self.source / sync.TRACKER).write_text(self.base + "\n", encoding="ascii")
+        (self.source / "official.txt").write_text("fork older snapshot\n", encoding="utf-8")
+        git(self.source, "add", ".")
+        git(self.source, "commit", "-qm", "record stale snapshot")
+        remote = self.root / "remote-stale.git"
+        subprocess.run(["git", "clone", "--bare", "-q", str(self.source), str(remote)], check=True)
+        (self.upstream / "official.txt").write_text("latest green official\n", encoding="utf-8")
+        (self.upstream / "new-official.txt").write_text("new upstream file\n", encoding="utf-8")
+        git(self.upstream, "add", ".")
+        git(self.upstream, "commit", "-qm", "new green upstream")
+        latest = git(self.upstream, "rev-parse", "HEAD")
+        previous = os.environ.get("GH_TOKEN")
+        os.environ["GH_TOKEN"] = "unit-test-placeholder-not-a-real-token"
+        try:
+            updated = sync.run_once(
+                dry_run=False, source=self.source, work_root=self.work,
+                upstream=str(self.upstream), fork=str(remote),
+                base_sha=self.base, manifest=self.manifest, force_sha=latest)
+            self.assertEqual(updated["mode"], "incremental")
+            self.assertGreaterEqual(updated["official_file_updates"], 2)
+            self.assertEqual(git(remote, "show", "main:official.txt"), "latest green official")
+            self.assertEqual(git(remote, "show", "main:new-official.txt"), "new upstream file")
+            self.assertEqual(git(remote, "show", "main:fork.txt"), "offline customization")
+            self.assertEqual(git(remote, "show", f"main:{sync.TRACKER}"), latest)
+        finally:
+            if previous is None:
+                os.environ.pop("GH_TOKEN", None)
+            else:
+                os.environ["GH_TOKEN"] = previous
+
+
     def test_local_commits_are_preserved_by_fast_forward_sync(self):
         remote = self.root / "remote.git"
         subprocess.run(["git", "clone", "--bare", "-q", str(self.upstream), str(remote)],

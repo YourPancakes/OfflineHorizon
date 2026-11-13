@@ -1,10 +1,10 @@
 name: OfflineHorizon upstream sync
 
 # GitHub handles upstream history, authorization, commits, and release dispatch.
-# The VPS Docker installation can remain read-only; no personal PAT is required.
+# Scheduled jobs start once the repository is public.
 on:
   schedule:
-    - cron: '17 3 1,15 * *'
+    - cron: '17 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -17,9 +17,7 @@ concurrency:
 
 jobs:
   synchronize:
-    # VPS Docker is the default while hosted Actions billing is exhausted.
-    # Set both repository variables to 1 to opt back into hosted sync/builds.
-    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main' && vars.OFFLINEHORIZON_GITHUB_SYNC == '1'
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.ref == 'refs/heads/main' && github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -63,7 +61,7 @@ jobs:
           echo "$result"
           printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
       - name: Dispatch the single combined game and launcher release
-        if: steps.base.outputs.ready == 'true' && vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
+        if: steps.base.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail

@@ -79,7 +79,8 @@ def plan(kind: str, head: str, releases: list, runs: list) -> str:
         raise ReleaseGuardError("Invalid workflow or source commit")
     previous = [
         release for release in releases
-        if release.get("target_commitish") == head
+        if (release.get("target_commitish") == head
+            or f"Build commit: {head}" in (release.get("body") or "").splitlines())
         and release.get("tag_name", "").startswith(PREFIX[kind])
         and not release.get("draft")
     ]
@@ -110,7 +111,89 @@ def plan(kind: str, head: str, releases: list, runs: list) -> str:
     return "dispatch"
 
 
+def _tree_entries(repo: str, tree: str, token: str) -> dict:
+    """Read a complete, immutable Git tree; reject invalid/truncated results."""
+    if not isinstance(tree, str) or not SHA.fullmatch(tree):
+        raise ReleaseGuardError("Invalid Git tree SHA")
+    payload = api(f"repos/{repo}/git/trees/{tree}", token)
+    if not isinstance(payload, dict) or payload.get("truncated"):
+        raise ReleaseGuardError("Cannot verify complete Git tree")
+    rows = payload.get("tree")
+    if not isinstance(rows, list):
+        raise ReleaseGuardError("Git tree entries unavailable")
+    out = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            raise ReleaseGuardError("Invalid Git tree entry")
+        entry_sha = row.get("sha")
+        if row["path"] in out or not isinstance(entry_sha, str) or not SHA.fullmatch(entry_sha):
+            raise ReleaseGuardError("Duplicate or invalid Git tree entry")
+        out[row["path"]] = (row.get("mode"), row.get("type"), entry_sha)
+    return out
+
+
+def _commit_entries(repo: str, sha: str, token: str) -> dict:
+    if not isinstance(sha, str) or not SHA.fullmatch(sha):
+        raise ReleaseGuardError("Invalid source commit SHA")
+    commit = api(f"repos/{repo}/git/commits/{sha}", token)
+    tree = commit.get("tree") if isinstance(commit, dict) else None
+    if not isinstance(tree, dict):
+        raise ReleaseGuardError("Source commit tree unavailable")
+    return _tree_entries(repo, tree.get("sha"), token)
+
+
+def same_buildable_sources(repo: str, built: str, head: str, token: str) -> bool:
+    """Exclude only CI workflows and the source-sync controller from build inputs."""
+    if built == head:
+        return True
+    old, current = _commit_entries(repo, built, token), _commit_entries(repo, head, token)
+    def main_entries(entries):
+        return {p: e for p, e in entries.items() if p not in (".github", "tools")}
+    if main_entries(old) != main_entries(current):
+        return False
+    original_tools, current_tools = old.get("tools"), current.get("tools")
+    if original_tools == current_tools:
+        return True
+    if not original_tools or not current_tools:
+        return False
+    before = _tree_entries(repo, original_tools[2], token)
+    after = _tree_entries(repo, current_tools[2], token)
+    def build_tools(entries):
+        return {p: e for p, e in entries.items() if p != "offlinehorizon_sync"}
+    return build_tools(before) == build_tools(after)
+
+
+def equivalent_published_release(head: str, releases: list, token: str) -> bool:
+    """Avoid a new release when the same exact build inputs already shipped."""
+    required = REQUIRED["offline-game.yml"]
+    repo = "YourPancakes/OfflineHorizon"
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        if not str(release.get("tag_name", "")).startswith(PREFIX["offline-game.yml"]):
+            continue
+        assets = {
+            a["name"] for a in release.get("assets", [])
+            if isinstance(a, dict) and isinstance(a.get("name"), str)
+            and a.get("state") == "uploaded" and isinstance(a.get("size"), int)
+            and a["size"] > 0 and isinstance(a.get("digest"), str)
+            and re.fullmatch(r"sha256:[a-f0-9]{64}", a["digest"])
+        }
+        if not required.issubset(assets):
+            continue
+        found = re.search(r"Build commit:\s*([a-f0-9]{40})", release.get("body") or "")
+        source = found.group(1) if found else release.get("target_commitish")
+        if not isinstance(source, str) or not SHA.fullmatch(source):
+            continue
+        if same_buildable_sources(repo, source, head, token):
+            return True
+    return False
+
+
 def main() -> int:
+    args = sys.argv[1:]
+    if args not in ([], ["--equivalent-release"]):
+        raise ReleaseGuardError("Unknown release guard option")
     token = os.environ.get("GH_TOKEN", "")
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     if not token or repo != "YourPancakes/OfflineHorizon":
@@ -120,11 +203,17 @@ def main() -> int:
     if not SHA.fullmatch(head):
         raise ReleaseGuardError("GitHub main branch SHA invalid")
     releases = collected(f"repos/{repo}/releases", token, "releases")
+    equivalent = equivalent_published_release(head, releases, token)
+    if args == ["--equivalent-release"]:
+        print("true" if equivalent else "false")
+        return 0
     decisions = {}
     for workflow in REQUIRED:
         path = f"repos/{repo}/actions/workflows/{urllib.parse.quote(workflow)}/runs?head_sha={head}"
         runs = collected(path, token, "workflow_runs")
-        decisions[workflow] = plan(workflow, head, releases, runs)
+        decisions[workflow] = (
+            "published" if equivalent else plan(workflow, head, releases, runs)
+        )
     print(json.dumps({"sha": head, "decisions": decisions}, sort_keys=True))
     return 0
 
