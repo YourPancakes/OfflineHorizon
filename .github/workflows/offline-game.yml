@@ -20,8 +20,7 @@ concurrency:
 
 jobs:
   source:
-    # Default to the low-resource external publisher until hosted builders return.
-    if: vars.OFFLINEHORIZON_GITHUB_BUILDS == '1'
+    if: github.repository == 'YourPancakes/OfflineHorizon' && github.event.repository.private == false
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
