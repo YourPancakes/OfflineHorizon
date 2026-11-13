@@ -221,11 +221,11 @@ jobs:
           HORIZON_LAUNCHER_TAG: ${{ needs.source.outputs.tag }}
         run: |
           set -euo pipefail
-          features=()
+          args=(--release --locked --manifest-path launcher/Cargo.toml --bin horizon-launcher)
           if [[ "$RUNNER_OS" == "macOS" ]] && ! xcrun metal --version >/dev/null 2>&1; then
-            features=(--features gpui_platform/runtime_shaders)
+            args+=(--features gpui_platform/runtime_shaders)
           fi
-          cargo build --release --locked --manifest-path launcher/Cargo.toml --bin horizon-launcher "${features[@]}"
+          cargo build "${args[@]}"
           bin="launcher/target/release/horizon-launcher${{ matrix.extension }}"
           [[ "$("$bin" --version | tr -d '\r')" == "horizon-launcher $HORIZON_LAUNCHER_VERSION" ]] ||
             { echo "::error::Launcher and game release versions disagree"; exit 1; }
