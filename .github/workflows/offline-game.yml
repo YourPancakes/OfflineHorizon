@@ -105,8 +105,18 @@ jobs:
           jq -e 'length == 0' <<< "$refs" > /dev/null
           files=(dist/horizon-launcher-linux-x86_64.tar.gz dist/horizon-linux-x86_64.tar.gz dist/horizon-server-linux-x86_64.tar.gz dist/horizon-launcher-macos-arm64.zip dist/horizon-launcher-macos-x64.zip dist/horizon-launcher-windows-arm64.zip dist/horizon-launcher-windows-x64.zip dist/horizon-macos-arm64.zip dist/horizon-macos-x64.zip dist/horizon-windows-arm64.zip dist/horizon-windows-x64.zip dist/horizon-launcher-setup-arm64.exe dist/horizon-launcher-setup.exe dist/horizon-launcher-macos-arm64.dmg dist/horizon-launcher-macos-x64.dmg)
           for file in "${files[@]}"; do test -s "$file"; done
+          # The GitHub Actions token cannot create a release pointing at an old
+          # commit whose workflow files differ from the default branch.
+          # Allow only workflow-file changes since the exact tested source.
+          head=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq '.object.sha')
+          test "$head" = "$GITHUB_SHA"
+          comparison=$(gh api "repos/$GH_REPO/compare/590779d9c56df25d2d12cc46ed3d8870c936b871...$GITHUB_SHA")
+          jq -e '
+            .status == "ahead" and
+            ([.files[].filename] | sort) == [".github/workflows/offline-game.yml"]
+          ' <<< "$comparison" > /dev/null
           gh release create v0.2.9 "${files[@]}" dist/SHA256SUMS \
-            --target "590779d9c56df25d2d12cc46ed3d8870c936b871" --title "OfflineHorizon 0.2.9" \
+            --target "$GITHUB_SHA" --title "OfflineHorizon 0.2.9" \
             --notes "OfflineHorizon game, launcher, tools and dedicated server.\n\nBuild commit: 590779d9c56df25d2d12cc46ed3d8870c936b871" \
             --draft
           assets=$(gh api "repos/$GH_REPO/releases/tags/v0.2.9" --jq '.assets')
