@@ -369,7 +369,7 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                 command(["git", "-c", "safe.directory=*", "clone", "--quiet", "--no-local", str(source), str(repo)], env=env)
             else:
                 command(["git", "clone", "--quiet", "--no-tags", "--single-branch",
-                         "--branch", "main", "--filter=blob:none", fork, str(repo)], env=env)
+                         "--branch", "main", fork, str(repo)], env=env)
             fork_head = git(repo, "rev-parse", "HEAD")
             fork_parent = fork_head
             old_sha = None

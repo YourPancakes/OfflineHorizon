@@ -57,9 +57,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          result=$(python3 tools/offlinehorizon_sync/sync.py --once)
-          echo "$result"
-          printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          # Print the structured error even when the synchronizer exits nonzero.
+          # A bare command substitution under set -e suppresses its stdout.
+          if result=$(python3 tools/offlinehorizon_sync/sync.py --once); then
+            printf '%s\n' "$result"
+            printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' "$result"
+            printf '### Upstream synchronization failed\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Dispatch the single combined game and launcher release
         if: steps.base.outputs.ready == 'true'
         shell: bash
