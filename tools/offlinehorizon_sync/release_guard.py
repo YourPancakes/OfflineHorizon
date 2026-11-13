@@ -79,7 +79,8 @@ def plan(kind: str, head: str, releases: list, runs: list) -> str:
         raise ReleaseGuardError("Invalid workflow or source commit")
     previous = [
         release for release in releases
-        if release.get("target_commitish") == head
+        if (release.get("target_commitish") == head
+            or f"Build commit: {head}" in (release.get("body") or "").splitlines())
         and release.get("tag_name", "").startswith(PREFIX[kind])
         and not release.get("draft")
     ]

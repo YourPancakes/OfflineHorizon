@@ -10,6 +10,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      rebuild_029:
+        description: Rebuild the combined v0.2.9 release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -40,18 +45,33 @@ jobs:
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          REBUILD_029: ${{ inputs.rebuild_029 }}
         run: |
           set -euo pipefail
-          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100")
-          existing=$(jq -r --arg head "$GITHUB_SHA" '.[] | select(.target_commitish == $head) | .tag_name | select(test("^v0\\.2\\.[0-9]+$"))' <<< "$releases")
-          if [[ -n "$existing" ]]; then
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq 'add')
+          existing=$(jq -r --arg head "$GITHUB_SHA" '
+            .[] | select(.draft == false and
+              (.target_commitish == $head or ((.body // "") | contains("Build commit: " + $head))))
+            | .tag_name | select(test("^v0\\.2\\.[0-9]+$"))
+          ' <<< "$releases")
+          if [[ -n "$existing" && "$REBUILD_029" != 'true' ]]; then
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "Existing game release for this source: $existing"
             exit 0
           fi
           # Increment independently of GitHub workflow run numbers and launcher tags.
           last=$(jq -r '.[].tag_name | select(test("^v0\\.2\\.[0-9]+$")) | sub("^v0\\.2\\."; "") | tonumber' <<< "$releases" | sort -n | tail -1)
-          version="0.2.$((${last:-0} + 1))"
+          if [[ "$REBUILD_029" == 'true' || "${last:-0}" -lt 9 ]]; then
+            version="0.2.9"
+          elif [[ "$last" == '9' ]] && ! jq -e '
+            any(.[]; .tag_name == "v0.2.9" and .draft == false and
+              ([.assets[] | select(.state == "uploaded" and .size > 0) | .name]
+               | index("horizon-launcher-macos-arm64.dmg") != null and index("horizon-launcher-macos-x64.dmg") != null))
+          ' <<< "$releases" > /dev/null; then
+            version="0.2.9"
+          else
+            version="0.2.$((last + 1))"
+          fi
           echo "publish=true" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
@@ -91,12 +111,14 @@ jobs:
             extension: ''
           - os: windows-2025
             name: windows-x64
+            pe_arch: x64
             archive: horizon-windows-x64.zip
             folder: horizon-windows-x64
             extension: '.exe'
             rustflags: -C target-feature=+crt-static
           - os: windows-11-vs2026-arm
             name: windows-arm64
+            pe_arch: arm64
             archive: horizon-windows-arm64.zip
             folder: horizon-windows-arm64
             extension: '.exe'
@@ -128,6 +150,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: offline-game-${{ matrix.name }}
+          workspaces: |
+            .
+            launcher
+      - name: Set up the Windows ARM64 assembler
+        if: matrix.name == 'windows-arm64'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            $llvmBin = Join-Path $env:ProgramFiles 'LLVM\bin'
+            $env:PATH = "$llvmBin;$env:PATH"
+            $llvmBin >> $env:GITHUB_PATH
+          }
+          Get-Command clang -ErrorAction Stop
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -140,6 +175,11 @@ jobs:
             -p horizon-client-lib --bin horizon-ctl \
             -p horizon-prepare --bin horizon-prepare \
             -p horizon-server --bin horizon-server
+      - name: Check Windows game and tool architectures
+        if: runner.os == 'Windows'
+        run: |
+          python tools/check_pe_arch.py "${{ matrix.pe_arch }}" target/release/horizon-official.exe \
+            target/release/horizon-ctl.exe target/release/horizon-prepare.exe target/release/horizon-server.exe
       - name: Smoke check compiled binaries
         run: |
           set -euo pipefail
@@ -187,7 +227,7 @@ jobs:
           fi
           cargo build --release --locked --manifest-path launcher/Cargo.toml --bin horizon-launcher "${features[@]}"
           bin="launcher/target/release/horizon-launcher${{ matrix.extension }}"
-          [[ "$("$bin" --version)" == "horizon-launcher $HORIZON_LAUNCHER_VERSION" ]] ||
+          [[ "$("$bin" --version | tr -d '\r')" == "horizon-launcher $HORIZON_LAUNCHER_VERSION" ]] ||
             { echo "::error::Launcher and game release versions disagree"; exit 1; }
           mkdir -p dist
           case "${{ matrix.name }}" in
@@ -195,6 +235,7 @@ jobs:
               tar -czf dist/horizon-launcher-linux-x86_64.tar.gz -C launcher/target/release horizon-launcher
               ;;
             windows-x64|windows-arm64)
+              python tools/check_pe_arch.py "${{ matrix.pe_arch }}" "$bin"
               name="horizon-launcher-windows-x64.zip"
               setup="horizon-launcher-setup.exe"
               if [[ "${{ matrix.name }}" == "windows-arm64" ]]; then
@@ -276,7 +317,8 @@ jobs:
                        horizon-launcher-linux-x86_64.tar.gz \
                        horizon-launcher-windows-x64.zip horizon-launcher-windows-arm64.zip \
                        horizon-launcher-macos-arm64.zip horizon-launcher-macos-x64.zip \
-                       horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe; do
+                       horizon-launcher-setup.exe horizon-launcher-setup-arm64.exe \
+                       horizon-launcher-macos-arm64.dmg horizon-launcher-macos-x64.dmg; do
             test -s "$asset" || { echo "::error::Missing $asset"; exit 1; }
           done
           sha256sum horizon-*.tar.gz horizon-*.zip horizon-launcher-setup*.exe horizon-launcher-macos-*.dmg > SHA256SUMS
@@ -289,9 +331,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "$TAG" dist/horizon-*.tar.gz dist/horizon-*.zip \
-            dist/horizon-launcher-setup*.exe dist/horizon-launcher-macos-*.dmg dist/SHA256SUMS \
-            --target "$GITHUB_SHA" \
-            --title "OfflineHorizon $VERSION" \
-            --notes "OfflineHorizon game, launcher, tools and dedicated server. Vanilla Minecraft resources are not redistributed." \
-            --latest
+          assets=(dist/horizon-*.tar.gz dist/horizon-*.zip dist/horizon-launcher-setup*.exe dist/horizon-launcher-macos-*.dmg)
+          notes=$(printf '%s\n\nBuild commit: %s\n' \
+            'OfflineHorizon game, launcher, tools and dedicated server.' "$GITHUB_SHA")
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq 'add')
+          if [[ "$TAG" == 'v0.2.9' ]] && jq -e --arg tag "$TAG" 'any(.[]; .tag_name == $tag and .draft == false)' <<< "$releases" > /dev/null; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release upload "$TAG" dist/SHA256SUMS --clobber
+            gh release edit "$TAG" --title "OfflineHorizon $VERSION" --notes "$notes"
+          else
+            gh release create "$TAG" "${assets[@]}" dist/SHA256SUMS \
+              --target "$GITHUB_SHA" --title "OfflineHorizon $VERSION" --notes "$notes" --latest
+          fi
+          digests=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets')
+          for file in "${assets[@]}" dist/SHA256SUMS; do
+            read -r digest _ < <(sha256sum "$file")
+            jq -e --arg name "${file##*/}" --arg digest "sha256:$digest" \
+              'any(.[]; .name == $name and .state == "uploaded" and .digest == $digest)' <<< "$digests" > /dev/null
+          done
