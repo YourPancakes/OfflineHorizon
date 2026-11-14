@@ -20,18 +20,13 @@ struct Out {
     out.uv = vec2(p.x, 1.0 - p.y);
     return out;
 }
-override PRESERVE_LIGHT: bool = false;
 @fragment fn fs_main(in: Out) -> @location(0) vec4<f32> {
     let step = blur.size_dir.zw / blur.size_dir.xy;
     let radius = round(blur.radius.x);
-    var center = vec4(0.0);
-    if PRESERVE_LIGHT {
-        center = textureSampleLevel(src, samp, in.uv, 0.0);
-    }
     var blurred = vec4(0.0);
     for (var a = -radius + 0.5; a <= radius; a += 2.0) {
-        blurred += textureSampleLevel(src, samp, in.uv + step * a, 0.0) - center;
+        blurred += textureSampleLevel(src, samp, in.uv + step * a, 0.0);
     }
-    blurred += (textureSampleLevel(src, samp, in.uv + step * radius, 0.0) - center) / 2.0;
-    return center + blurred / (radius + 0.5);
+    blurred += textureSampleLevel(src, samp, in.uv + step * radius, 0.0) / 2.0;
+    return blurred / (radius + 0.5);
 }

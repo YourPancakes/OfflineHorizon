@@ -104,13 +104,7 @@ impl MenuBlur {
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[(
-                        "PRESERVE_LIGHT",
-                        f64::from(u8::from(format == wgpu::TextureFormat::Rgba16Float)),
-                    )],
-                    ..Default::default()
-                },
+                compilation_options: Default::default(),
             }),
             primitive: Default::default(),
             depth_stencil: None,

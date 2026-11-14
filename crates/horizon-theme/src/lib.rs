@@ -61,7 +61,6 @@ pub mod glass_icons {
         "arrow-down-01",
         "arrow-right-01",
         "cancel-01",
-        "chat-bubble",
         "color-picker",
         "computer",
         "computer-terminal-01",

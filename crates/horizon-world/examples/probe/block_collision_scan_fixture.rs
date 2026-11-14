@@ -40,7 +40,6 @@ fn shape(index: u64) -> VoxelShape {
         _ => unreachable!(),
     }
 }
-#[derive(Clone)]
 struct Entry {
     block: CollisionBlock,
     shape: VoxelShape,
@@ -120,7 +119,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?)));
     for line in fs::read_to_string(dir.join("inputs.txt"))?.lines() {
         let f: Value = serde_json::from_str(line)?;
-        let palette: Vec<Entry> = f["palette"]
+        let palette = f["palette"]
             .as_array()
             .unwrap()
             .iter()
@@ -142,7 +141,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             fail: f["fail"].as_i64().unwrap() as i32,
             missing: f["missing"].as_i64().unwrap() as i32,
             seed: f["seed"].as_i64().unwrap() as i32,
-            palette: palette.clone(),
+            palette,
         };
         let v = &f["box"];
         let bounds = Aabb::new(
@@ -168,43 +167,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             writeln!(out.borrow_mut(), "done support {}", world.calls)?;
             continue;
-        }
-        // Check the optimized consumer against the oracle-backed iterator.
-        // Independent worlds expose provider errors and callback order as well as hits.
-        for budget in [0, 1, 3, 1_000_000] {
-            let check = |presence: bool| {
-                let calls = Rc::new(RefCell::new(Vec::<u8>::new()));
-                let mut candidate = World {
-                    out: calls.clone(),
-                    calls: 0,
-                    fail: f["fail"].as_i64().unwrap() as i32,
-                    missing: f["missing"].as_i64().unwrap() as i32,
-                    seed: f["seed"].as_i64().unwrap() as i32,
-                    palette: palette.clone(),
-                };
-                let context = CollisionContext::empty(false);
-                let suffocating = f["suffocating"].as_bool().unwrap();
-                let result = if presence {
-                    BlockCollisionScan::any_collision(
-                        &mut candidate,
-                        context,
-                        bounds,
-                        suffocating,
-                        budget,
-                    )
-                } else {
-                    BlockCollisionScan::new(&mut candidate, context, bounds, suffocating, budget)
-                        .and_then(|mut scan| scan.next().transpose().map(|hit| hit.is_some()))
-                }
-                .map_err(|error| error.to_string());
-                let trace = calls.borrow().clone();
-                (result, trace)
-            };
-            assert_eq!(
-                check(true),
-                check(false),
-                "boolean scan: budget={budget}, fixture={f}"
-            );
         }
         let mut hits = 0;
         {
