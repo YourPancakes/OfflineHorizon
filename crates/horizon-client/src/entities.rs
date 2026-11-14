@@ -1371,11 +1371,15 @@ pub struct ExperienceOrb {
     pub ticks: u32,
     /// `ExperienceOrb.health`: damage wears it down from 5 (`hurtServer`).
     pub health: i32,
+    /// `Entity.airSupply`: loaded and saved as is; an orb never breathes.
+    pub air: i32,
     /// `Entity.noGravity`: `ExperienceOrb.tick`'s `applyGravity` does nothing.
     pub no_gravity: bool,
     /// `ExperienceOrb.followingPlayer`: the followed player's entity id, kept
     /// until they are gone or further than 8 blocks. Never saved.
     pub following: Option<u32>,
+    /// `Entity.fallDistance` (`fall_distance` in its save).
+    pub fall_distance: f64,
 }
 impl ExperienceOrb {
     /// `ExperienceOrb.hurtServer`: the damage comes off the health as an
@@ -1534,7 +1538,7 @@ impl ExperienceOrb {
         self.previous = self.position;
         // `Entity.baseTick`'s fluid step, whose `updateFluidOnEyes` answer the
         // water branch below reads: the orb's eye, not its feet, decides.
-        let eye_in_water = self.update_fluids(world, fluids);
+        let (eye_in_water, _in_water) = self.update_fluids(world, fluids);
         let block = world.block(
             self.position.x.floor() as i32,
             self.position.y.floor() as i32,
@@ -1995,8 +1999,8 @@ pub struct ItemFrame {
     pub facing: u8,
     pub glow: bool,
     pub item: Option<crate::items::ItemStack>,
-    /// 0..8, in 45 degree steps.
-    pub rotation: u8,
+    /// Java `%` remainder of ItemRotation, so -7..=7 in 45 degree steps.
+    pub rotation: i8,
     pub drop_chance: f32,
     pub fixed: bool,
     pub invisible: bool,
@@ -3446,7 +3450,9 @@ mod world_border_tests {
                 count: 1,
                 ticks: 0,
                 health: 5,
+                air: 300,
                 following: None,
+                fall_distance: 0.0,
             };
             orb.tick(
                 &world,
@@ -4856,7 +4862,9 @@ mod orb_underwater_tests {
                     count: 1,
                     ticks: 0,
                     health: 5,
+                    air: 300,
                     following: None,
+                    fall_distance: 0.0,
                 };
                 orb.set_underwater_movement();
                 [
@@ -4890,7 +4898,9 @@ mod render_light_tests {
             count: 1,
             ticks: 0,
             health: 5,
+            air: 300,
             following: None,
+            fall_distance: 0.0,
         }
     }
 
@@ -5091,7 +5101,9 @@ mod orb_lava_tests {
             count: 1,
             ticks: 0,
             health,
+            air: 300,
             following: None,
+            fall_distance: 0.0,
         }
     }
 
