@@ -109,14 +109,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_endpoint_defaults_to_the_server_and_can_be_moved_or_turned_off() {
-        assert_eq!(resolve(None).as_deref(), Some(DEFAULT_ENDPOINT));
-        assert_eq!(resolve(Some(" ")).as_deref(), Some(DEFAULT_ENDPOINT));
-        assert_eq!(
-            resolve(Some("http://127.0.0.1:8080/")).as_deref(),
-            Some("http://127.0.0.1:8080")
-        );
-        assert_eq!(resolve(Some("off")), None);
-        assert!(DEFAULT_ENDPOINT.starts_with("https://") && !DEFAULT_ENDPOINT.ends_with('/'));
+    fn offlinehorizon_telemetry_stays_disabled() {
+        // The fork deliberately does not send telemetry, even with upstream updates.
+        assert_eq!(endpoint(), None);
     }
 }
