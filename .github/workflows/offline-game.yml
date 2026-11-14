@@ -101,11 +101,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev
+      - name: Reject forbidden crate-layer dependencies
+        run: python3 tools/check_layers.py
       - name: Rust core, friends, and client library tests
-        run: cargo test --locked --lib -p horizon-core -p horizon-friends -p horizon-client
+        run: cargo test --locked --lib -p horizon-core -p horizon-friends -p horizon-client -p horizon-client-lib
+      - name: Verify game, server and launcher compile before matrix builds
+        run: |
+          cargo check --locked -p horizon-official -p horizon-server -p horizon-prepare
+          cargo check --locked --manifest-path launcher/Cargo.toml --all-targets
 
   build:
-    needs: source
+    needs: [source, tests]
     if: needs.source.outputs.publish == 'true'
     continue-on-error: false
     strategy:
