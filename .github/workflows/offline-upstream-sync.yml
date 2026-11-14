@@ -1,10 +1,8 @@
 name: OfflineHorizon upstream sync
 
-# GitHub handles upstream history, authorization, commits, and release dispatch.
-# Scheduled jobs start once the repository is public.
+# Manual fallback only. The VPS watcher checks fully green upstream commits every 120s.
+# Never push a synchronised, untested fork snapshot into main.
 on:
-  schedule:
-    - cron: '17 */4 * * *'
   workflow_dispatch:
 
 permissions:
@@ -61,28 +59,23 @@ jobs:
           # A bare command substitution under set -e suppresses its stdout.
           if result=$(python3 tools/offlinehorizon_sync/sync.py --once); then
             printf '%s\n' "$result"
+            printf '%s\n' "$result" > "$RUNNER_TEMP/offlinehorizon-candidate.json"
             printf '### Upstream source synchronization\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
           else
             printf '%s\n' "$result"
             printf '### Upstream synchronization failed\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-      - name: Dispatch the single combined game and launcher release
+      - name: Dispatch combined fork CI on the candidate, never on main
         if: steps.base.outputs.ready == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # GITHUB_TOKEN pushes do not trigger push workflows. Dispatch only
-          # the combined release workflow, even when the upstream SHA has not changed,
-          # if a previous dispatch failed or was never started.
-          result=$(python3 tools/offlinehorizon_sync/release_guard.py)
-          printf '### Release readiness\n\n```json\n%s\n```\n' "$result" >> "$GITHUB_STEP_SUMMARY"
-          for workflow in offline-game.yml; do
-            decision=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["decisions"][sys.argv[2]])' "$result" "$workflow")
-            echo "$workflow: $decision"
-            if [[ "$decision" == dispatch ]]; then
-              gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref main
-            elif [[ "$decision" == incomplete_release || "$decision" == successful_run_without_release || "$decision" == retry_limit ]]; then
-              printf '\n- %s: %s (manual investigation required)\n' "$workflow" "$decision" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+          status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"])' "$RUNNER_TEMP/offlinehorizon-candidate.json")
+          if [[ "$status" == candidate_pushed || "$status" == candidate_exists ]]; then
+            branch=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["branch"])' "$RUNNER_TEMP/offlinehorizon-candidate.json")
+            [[ "$branch" =~ ^offlinehorizon/candidate/[0-9a-f]{40}-[0-9a-f]{12}$ ]] || exit 1
+            gh workflow run offline-game.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+          else
+            echo "No new candidate to build: $status"
+          fi

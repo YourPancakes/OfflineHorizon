@@ -303,9 +303,64 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
+  # A candidate is promoted only after all target platforms and fork tests pass.
+  # The GITHUB_TOKEN ref update does not trigger a second expensive push build.
+  promote:
     needs: [source, tests, build]
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.source.outputs.publish == 'true'
+    if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/offlinehorizon/candidate/') && needs.source.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require exact candidate provenance and fully green official source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s extglob
+          [[ "$GITHUB_REF" =~ ^refs/heads/offlinehorizon/candidate/([0-9a-f]{40})-([0-9a-f]{12})$ ]] ||
+            { echo "::error::Not an immutable upstream candidate branch"; exit 1; }
+          upstream="${BASH_REMATCH[1]}"
+          fork_base_prefix="${BASH_REMATCH[2]}"
+          test "$(cat .offline-horizon-upstream-sha)" = "$upstream"
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          parent=$(git rev-parse HEAD^)
+          [[ "$parent" == "$current" && "${parent:0:12}" == "$fork_base_prefix" ]] ||
+            { echo "::error::Fork main changed since candidate was built. Re-stage and re-test."; exit 1; }
+          UPSTREAM_SHA="$upstream" python3 - <<'PY'
+          import os
+          import sys
+          sys.path.insert(0, "tools/offlinehorizon_sync")
+          from sync import upstream_ci_ready
+          valid, detail = upstream_ci_ready(os.environ["UPSTREAM_SHA"], os.environ["GH_TOKEN"])
+          if not valid:
+              raise SystemExit("Official Horizon is no longer fully green: " + detail)
+          print("Verified official green commit:", os.environ["UPSTREAM_SHA"], detail)
+          PY
+      - name: Fast-forward tested candidate into fork main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          parent=$(git rev-parse HEAD^)
+          [[ "$current" == "$parent" ]] ||
+            { echo "::error::Fork main moved since the candidate was built"; exit 1; }
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/main" \
+            -f sha="$GITHUB_SHA" -F force=false
+          promoted=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          test "$promoted" = "$GITHUB_SHA"
+
+  release:
+    needs: [source, tests, build, promote]
+    if: always() && needs.tests.result == 'success' && needs.build.result == 'success' && needs.source.outputs.publish == 'true' && (github.ref == 'refs/heads/main' || needs.promote.result == 'success') && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write

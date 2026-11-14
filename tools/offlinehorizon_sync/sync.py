@@ -19,6 +19,14 @@ import urllib.request
 from datetime import datetime, timezone
 
 TRACKER = ".offline-horizon-upstream-sha"
+CANDIDATE_PREFIX = "offlinehorizon/candidate"
+
+
+def candidate_branch(upstream_sha: str, fork_parent: str) -> str:
+    """Stable candidate per verified upstream SHA and the exact fork base."""
+    if not SHA_RE.fullmatch(upstream_sha) or not SHA_RE.fullmatch(fork_parent):
+        raise SyncError("Invalid SHA for candidate branch")
+    return f"{CANDIDATE_PREFIX}/{upstream_sha}-{fork_parent[:12]}"
 HERE = Path(__file__).resolve().parent
 DEFAULT_UPSTREAM = "https://github.com/horizon-rust/horizon.git"
 DEFAULT_FORK = "https://github.com/YourPancakes/OfflineHorizon.git"
@@ -404,6 +412,20 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                 return {"result": "already_ahead", "upstream": latest,
                         "current": old_sha, "pushed": False}
 
+            branch = candidate_branch(latest, fork_parent)
+            # A candidate already under test must never be rewritten or built repeatedly.
+            # An interrupted run may safely rediscover the same immutable branch.
+            if not dry_run:
+                listing = git(repo, "ls-remote", "--heads", "origin",
+                              f"refs/heads/{branch}", env=env)
+                if listing:
+                    remote_sha = listing.split()[0]
+                    if not SHA_RE.fullmatch(remote_sha):
+                        raise SyncError("Invalid candidate ref returned by origin")
+                    return {"result": "candidate_exists", "upstream": latest,
+                            "upstream_head": head, "branch": branch,
+                            "commit": remote_sha, "fork_parent": fork_parent,
+                            "pushed": False}
             git(repo, "remote", "add", "upstream", upstream)
             # Fetch exactly two immutable snapshots, in ONE shallow operation.
             # Do not filter blobs: lazy blob downloads combined with a changing
@@ -534,9 +556,9 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                          "-m", f"sync: upstream {latest[:12]} (keep OfflineHorizon changes)",
                          env=commit_env)
             changed = git(repo, "diff", "--shortstat", fork_parent, commit)
-            outcome = {"result": "prepared" if dry_run else "pushed", "mode": mode,
+            outcome = {"result": "prepared" if dry_run else "candidate_pushed", "mode": mode,
                        "upstream": latest, "upstream_head": head,
-                       "fork_parent": fork_parent, "commit": commit,
+                       "branch": branch, "fork_parent": fork_parent, "commit": commit,
                        "patch_bytes": patch.stat().st_size,
                        "official_file_updates": len(update_paths) if mode == "incremental" else 0,
                        "summary": changed,
@@ -547,9 +569,11 @@ def run_once(*, dry_run: bool = True, source: Path | None = None,
                     safe_json_write(dry_state, {"upstream": latest, "selection": "green"})
                 return outcome
 
-            # Fast-forward-only push: concurrent GitHub commits cause a safe failure.
+            # NEVER publish an untested merged tree to main. The dedicated
+            # release workflow verifies the candidate and promotes it atomically.
+            # No force push: a candidate SHA/base pair is immutable.
             git(repo, "push", "--porcelain", "origin",
-                f"{commit}:refs/heads/main", env=env)
+                f"{commit}:refs/heads/{branch}", env=env)
             return outcome
         finally:
             shutil.rmtree(staging, ignore_errors=False)

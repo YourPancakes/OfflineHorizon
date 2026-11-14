@@ -511,11 +511,14 @@ class GitSynchronizationTests(unittest.TestCase):
                 upstream=str(self.upstream), fork=str(remote),
                 base_sha=self.base, manifest=self.manifest, force_sha=latest)
             self.assertEqual(updated["mode"], "incremental")
+            self.assertEqual(updated["result"], "candidate_pushed")
             self.assertGreaterEqual(updated["official_file_updates"], 2)
-            self.assertEqual(git(remote, "show", "main:official.txt"), "latest green official")
-            self.assertEqual(git(remote, "show", "main:new-official.txt"), "new upstream file")
-            self.assertEqual(git(remote, "show", "main:fork.txt"), "offline customization")
-            self.assertEqual(git(remote, "show", f"main:{sync.TRACKER}"), latest)
+            branch = updated["branch"]
+            self.assertEqual(git(remote, "show", f"{branch}:official.txt"), "latest green official")
+            self.assertEqual(git(remote, "show", f"{branch}:new-official.txt"), "new upstream file")
+            self.assertEqual(git(remote, "show", f"{branch}:fork.txt"), "offline customization")
+            self.assertEqual(git(remote, "show", f"{branch}:{sync.TRACKER}"), latest)
+            self.assertEqual(git(remote, "show", "main:official.txt"), "fork older snapshot")
         finally:
             if previous is None:
                 os.environ.pop("GH_TOKEN", None)
@@ -537,12 +540,22 @@ class GitSynchronizationTests(unittest.TestCase):
                 base_sha=self.base, manifest=self.manifest,
                 force_sha=self.base,
             )
-            self.assertEqual(initial["result"], "pushed")
+            self.assertEqual(initial["result"], "candidate_pushed")
             self.assertEqual(initial["fork_parent"], original_source)
-            first = git(remote, "rev-parse", "refs/heads/main")
-            self.assertEqual(git(remote, "show", "main:fork.txt"), "offline customization")
-            self.assertEqual(git(remote, "show", f"main:{sync.TRACKER}"), self.base)
-            self.assertEqual(git(remote, "rev-parse", "main^"), original_source)
+            first = git(remote, "rev-parse", f"refs/heads/{initial['branch']}")
+            self.assertEqual(git(remote, "show", f"{initial['branch']}:fork.txt"), "offline customization")
+            self.assertEqual(git(remote, "show", f"{initial['branch']}:{sync.TRACKER}"), self.base)
+            self.assertEqual(git(remote, "rev-parse", f"{initial['branch']}^"), original_source)
+            repeated = sync.run_once(
+                dry_run=False, source=self.source, work_root=self.work,
+                upstream=str(self.upstream), fork=str(remote),
+                base_sha=self.base, manifest=self.manifest, force_sha=self.base,
+            )
+            self.assertEqual(repeated["result"], "candidate_exists")
+            self.assertEqual(repeated["commit"], first)
+            self.assertEqual(git(remote, "rev-parse", "refs/heads/main"), self.base)
+            # CI promotion is external. Simulate its fast-forward only AFTER approval.
+            git(remote, "update-ref", "refs/heads/main", first)
 
             (self.upstream / "official.txt").write_text("base\nnew official change\n",
                                                         encoding="utf-8")
@@ -555,13 +568,16 @@ class GitSynchronizationTests(unittest.TestCase):
                 base_sha=self.base, manifest=self.manifest,
                 force_sha=latest,
             )
-            self.assertEqual(second["result"], "pushed")
+            self.assertEqual(second["result"], "candidate_pushed")
             self.assertEqual(second["mode"], "incremental")
             self.assertEqual(second["fork_parent"], first)
-            self.assertEqual(git(remote, "show", "main:official.txt"),
+            self.assertEqual(git(remote, "rev-parse", "main"), first)
+            self.assertEqual(git(remote, "show", f"{second['branch']}:official.txt"),
                              "base\nnew official change")
-            self.assertEqual(git(remote, "show", "main:fork.txt"), "offline customization")
-            self.assertEqual(git(remote, "show", f"main:{sync.TRACKER}"), latest)
+            self.assertEqual(git(remote, "show", f"{second['branch']}:fork.txt"), "offline customization")
+            self.assertEqual(git(remote, "show", f"{second['branch']}:{sync.TRACKER}"), latest)
+            # Red CI must not promote. A green CI is allowed to fast-forward main.
+            git(remote, "update-ref", "refs/heads/main", second["commit"])
             again = sync.run_once(
                 dry_run=False, source=self.source, work_root=self.work,
                 upstream=str(self.upstream), fork=str(remote),

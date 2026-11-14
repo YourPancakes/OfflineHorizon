@@ -78,10 +78,12 @@ tests/test_pr_ready.py
 tests/test_remote_motion.py
 tools/addresses.json
 tools/offlinehorizon_sync/sync.py
+tools/offlinehorizon_sync/scheduler.py
 tools/offlinehorizon_sync/release_guard.py
 tools/offlinehorizon_sync/manifest.txt
 tools/offlinehorizon_sync/README.md
 tools/offlinehorizon_sync/tests/test_sync.py
+tools/offlinehorizon_sync/tests/test_scheduler.py
 tools/offlinehorizon_sync/tests/test_release_guard.py
 tools/parity.py
 tools/port_publish.py
