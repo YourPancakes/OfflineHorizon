@@ -966,6 +966,7 @@ pub fn decode_block_entity(tag: &Tag) -> Option<((i32, i32, i32), crate::contain
                 ticks,
                 song_clock_present,
                 playing,
+                loaded_clock: song_clock_present,
             }),
         ));
     }
