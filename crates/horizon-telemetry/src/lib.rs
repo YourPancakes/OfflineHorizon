@@ -18,7 +18,8 @@ pub mod consent;
 pub mod live;
 pub mod outbox;
 pub mod payload;
-pub mod scrub;
+/// Keep the telemetry scrub API while following the upstream platform module.
+pub use horizon_platform::system::scrub;
 pub mod server_status;
 /// The machine's probes, from the platform (`horizon-system`). Kept at this path for the
 /// launcher and the benchmark.
